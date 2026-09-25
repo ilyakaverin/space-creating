@@ -1,10 +1,14 @@
 <script lang="ts">
-import featureImage from "./assets/favicon/favicon-32x32.png";
-import PasskeyLogin from "./lib/PasskeyLogin.svelte";
+import { base } from "$app/paths";
+import PasskeyLogin from "$lib/PasskeyLogin.svelte";
 </script>
 
+<svelte:head>
+  <title>creating space</title>
+</svelte:head>
+
 <main>
-  <img src={featureImage} alt="creating space logo" />
+  <img src="{base}/favicon/favicon-32x32.png" alt="creating space logo" />
   <PasskeyLogin />
 </main>
 
@@ -30,6 +34,4 @@ img {
     transform: scale(1.2);
   }
 }
-
-
 </style>

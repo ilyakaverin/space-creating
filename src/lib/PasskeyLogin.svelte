@@ -1,4 +1,5 @@
 <script lang="ts">
+import { onMount } from "svelte";
 import {
 	type StoredPasskey,
 	createPasskey,
@@ -8,15 +9,24 @@ import {
 	signInWithPasskey,
 } from "./passkey";
 
-const supported = isPasskeySupported();
-
-let passkey = $state<StoredPasskey | null>(supported ? loadPasskey() : null);
+/** The stored credential is browser-only state, so it is resolved after hydration. */
+let ready = $state(false);
+let supported = $state(false);
+let passkey = $state<StoredPasskey | null>(null);
 let signedInAs = $state<string | null>(null);
 let busy = $state(false);
 let error = $state("");
 let notice = $state("");
 
-const label = $derived(passkey ? "Sign in with a passkey" : "Create a passkey");
+onMount(() => {
+	supported = isPasskeySupported();
+	passkey = supported ? loadPasskey() : null;
+	ready = true;
+});
+
+const label = $derived(
+	ready && !passkey ? "Create a passkey" : "Sign in with a passkey",
+);
 
 const describe = (cause: unknown): string => {
 	if (cause instanceof DOMException) {
@@ -80,13 +90,13 @@ const handleForget = () => {
 </script>
 
 <section class="passkey">
-  {#if !supported}
+  {#if ready && !supported}
     <p class="message error">This browser does not support passkeys.</p>
   {:else if signedInAs}
     <p class="message">Signed in as {signedInAs}</p>
     <button type="button" onclick={handleSignOut}>Sign out</button>
   {:else}
-    <button type="button" onclick={handleClick} disabled={busy} aria-busy={busy}>
+    <button type="button" onclick={handleClick} disabled={!ready || busy} aria-busy={busy}>
       {busy ? "Waiting for your authenticator…" : label}
     </button>
   {/if}
