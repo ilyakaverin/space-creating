@@ -27,6 +27,8 @@ The UI talks to a relying party (`src/lib/passkey/types.ts`) that issues options
 
 ### Backend contract
 
+The full backend specification (validation, challenges, sessions, verification rules, data model, security, tests) is in [`docs/passkey-backend-requirements.md`](docs/passkey-backend-requirements.md).
+
 Binary fields are base64url strings throughout. Options use the WebAuthn Level 3 JSON shapes (`PublicKeyCredentialCreationOptionsJSON` / `PublicKeyCredentialRequestOptionsJSON`), and credentials arrive as `PublicKeyCredential.toJSON()` output, with `response.transports` on registrations.
 
 | Request | Body | Success |
