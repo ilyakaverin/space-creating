@@ -14,6 +14,8 @@ Tech stack: sveltekit, svelte 5, vite, typescript, biome
 
 Pages are server-rendered; `@sveltejs/adapter-node` builds a standalone node server.
 
+Installable as a PWA: `static/favicon/site.webmanifest` plus `src/service-worker.ts`, which precaches the build output and static files and keeps the last server render as an offline fallback. SvelteKit only registers the service worker in production builds, so test it with `pnpm build && pnpm start` over https or localhost.
+
 ## Scripts
 
 - `pnpm dev` — dev server on port 3000
