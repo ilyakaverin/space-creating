@@ -92,7 +92,7 @@ const handleForget = () => {
   {/if}
 
   {#if passkey && !signedInAs}
-    <button type="button" class="ghost" onclick={handleForget} disabled={busy}>Forget this passkey</button>
+    <button type="button" onclick={handleForget} disabled={busy}>Forget this passkey</button>
   {/if}
 
   <p class="message" aria-live="polite">
@@ -113,36 +113,6 @@ const handleForget = () => {
   margin-block-start: 1.5rem;
   max-width: 40ch;
   text-align: center;
-}
-
-button {
-  background-color: var(--dark-card);
-  border: 1px solid var(--gray);
-  border-radius: 0.375rem;
-  color: var(--light);
-  cursor: pointer;
-  font: inherit;
-  font-size: clamp(0.875rem, 0.8rem + 0.6vw, 1.125rem);
-  padding: 0.75em 1.5em;
-  transition: background-color 150ms ease-in-out, border-color 150ms ease-in-out;
-}
-
-button:hover:not(:disabled),
-button:focus-visible {
-  background-color: var(--black);
-  border-color: var(--orange);
-}
-
-button:disabled {
-  cursor: progress;
-  opacity: 0.6;
-}
-
-.ghost {
-  background: none;
-  border-color: transparent;
-  color: var(--gray);
-  padding: 0.25em 0.75em;
 }
 
 .message {
