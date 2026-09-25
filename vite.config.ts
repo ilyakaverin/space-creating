@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { vitePreprocess } from '@sveltejs/vite-plugin-svelte'
@@ -10,8 +11,7 @@ export default defineConfig({
   ],
   resolve: {
     alias: {
-      src: "./src",
-      $lib: "./src/lib"
+      src: fileURLToPath(new URL('./src', import.meta.url))
     }
   },
   server: {
