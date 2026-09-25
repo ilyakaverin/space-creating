@@ -1,6 +1,8 @@
-packages:
-  # include packages in subfolders (change as required)
-  - 'apps/**'
-  - 'packages/**'
-  # if required, exclude directories
-  - '!**/test/**'
+allowBuilds:
+  '@biomejs/biome': true
+  esbuild: true
+  svelte-preprocess: true
+onlyBuiltDependencies:
+  - '@biomejs/biome'
+  - esbuild
+  - svelte-preprocess

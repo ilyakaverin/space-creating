@@ -4,7 +4,7 @@ import featureImage from "./assets/favicon/favicon-32x32.png";
 
 <main>
   <h1>creating space</h1>
-  <img src={featureImage} alt="The feature image" />
+  <img src={featureImage} alt="creating space logo" />
 </main>
 
 <style>

@@ -1,5 +1,5 @@
 {
-  "name": "created-rest",
+  "name": "space-creating",
   "version": "3.0.0",
   "description": "landing page",
   "browserslist": "> 0.5%, last 2 versions, not dead",
@@ -7,23 +7,23 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "format": "npx @biomejs/biome format --write ./src",
+    "format": "biome format --write ./src",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "lint": "biome check ./src",
     "preinstall": "npx only-allow pnpm"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ilyakaverin/dev.git"
+    "url": "git+https://github.com/ilyakaverin/space-creating.git"
   },
   "author": "ilya kaverin",
   "license": "ISC",
   "bugs": {
-    "url": "https://github.com/ilyakaverin/dev/issues"
+    "url": "https://github.com/ilyakaverin/space-creating/issues"
   },
-  "homepage": "https://github.com/ilyakaverin/dev#readme",
+  "homepage": "https://github.com/ilyakaverin/space-creating#readme",
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
     "@sveltejs/vite-plugin-svelte": "4.0.0-next.6",
