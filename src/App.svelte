@@ -1,9 +1,11 @@
-<script>
+<script lang="ts">
 import featureImage from "./assets/favicon/favicon-32x32.png";
+import PasskeyLogin from "./lib/PasskeyLogin.svelte";
 </script>
 
 <main>
   <img src={featureImage} alt="creating space logo" />
+  <PasskeyLogin />
 </main>
 
 <style>
