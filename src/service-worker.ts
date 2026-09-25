@@ -45,7 +45,7 @@ const fromCacheFirst = async (request: Request): Promise<Response> => {
 	return response;
 };
 
-/** Server-rendered pages are fetched fresh, with the last good render as the offline fallback. */
+/** Page navigations are fetched fresh, with the last good render as the offline fallback. */
 const fromNetworkFirst = async (request: Request): Promise<Response> => {
 	const cache = await caches.open(PAGE_CACHE);
 	try {
@@ -72,9 +72,10 @@ sw.addEventListener("fetch", (event) => {
 	if (url.origin !== location.origin) {
 		return;
 	}
-	event.respondWith(
-		ASSETS.includes(url.pathname)
-			? fromCacheFirst(request)
-			: fromNetworkFirst(request),
-	);
+	if (ASSETS.includes(url.pathname)) {
+		event.respondWith(fromCacheFirst(request));
+	} else if (request.mode === "navigate") {
+		event.respondWith(fromNetworkFirst(request));
+	}
+	// Anything else, such as the passkey API's session lookup, must never be answered from a cache.
 });
