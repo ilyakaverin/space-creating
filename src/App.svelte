@@ -18,7 +18,14 @@ main {
 }
 
 h1 {
-  color: var(--light)
+  color: var(--light);
+  font-size: clamp(1.75rem, 1.25rem + 4vw, 4rem);
+  line-height: 1.1;
+  margin-block: 0.5em;
+  max-width: 20ch;
+  text-align: center;
+  text-wrap: balance;
+  overflow-wrap: break-word;
 }
 
 img {
