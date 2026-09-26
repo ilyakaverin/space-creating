@@ -24,3 +24,11 @@ build
 *.njsproj
 *.sln
 *.sw?
+
+# Passkey backend: local settings and the SQLite database
+.env
+data/
+
+# Playwright
+test-results/
+playwright-report/

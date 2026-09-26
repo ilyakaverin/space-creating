@@ -40,9 +40,9 @@ SvelteKit server (adapter-node)
 
 | Variable | Kind | Example | Default | Purpose |
 |---|---|---|---|---|
-| `PUBLIC_PASSKEY_API_URL` | public, runtime | `/api/passkey` | unset → local mode | Switches the frontend to this backend |
+| `PUBLIC_PASSKEY_API_URL` | public, runtime | `/api/passkey` | unset → local mode | Switches the frontend to a backend; the built-in one starts only when this is `/api/passkey` (BR-CONF-6) |
 | `PUBLIC_PASSKEY_RP_ID` | public, runtime | `example.com` | page hostname | Only when the RP ID is not the page's hostname; used by the frontend for Signal API calls |
-| `PASSKEY_ORIGIN` | private | `https://example.com` | `ORIGIN` | Expected WebAuthn origin(s) and allowed `Origin` header; comma-separated for several |
+| `PASSKEY_ORIGIN` | private | `https://example.com` | `ORIGIN`; `http://localhost:3000` under `pnpm dev` | Expected WebAuthn origin(s) and allowed `Origin` header; comma-separated for several |
 | `PASSKEY_RP_ID` | private | `example.com` | hostname of `PASSKEY_ORIGIN` | Relying party ID |
 | `PASSKEY_RP_NAME` | private | `creating space` | `creating space` | Shown by some authenticators |
 | `DATABASE_PATH` | private | `data/passkeys.sqlite` | `data/passkeys.sqlite` | SQLite file |
@@ -52,8 +52,9 @@ SvelteKit server (adapter-node)
 - **BR-CONF-1** Private settings are read through `$env/dynamic/private` and validated once at startup. A missing or invalid value MUST stop the server with a clear message, not fail at the first request.
 - **BR-CONF-2** `PASSKEY_RP_ID` MUST equal the hostname of every `PASSKEY_ORIGIN` or be a registrable parent of it; this is checked at startup (FR-SEC-2).
 - **BR-CONF-3** Every environment (dev, staging, prod) has its own RP ID and database. Passkeys registered for one RP ID never work on another; this is expected, not a bug.
-- **BR-CONF-4** Development uses `PASSKEY_ORIGIN=http://localhost:3000` (`pnpm dev`) or the port actually served. The LAN address printed by `pnpm dev` is not a secure context and cannot be used.
+- **BR-CONF-4** Development uses `PASSKEY_ORIGIN=http://localhost:3000` (`pnpm dev`, also the default in development) or the port actually served. The LAN address printed by `pnpm dev` is not a secure context and cannot be used.
 - **BR-CONF-5** Local settings go in `.env` (gitignored); a committed `.env.example` lists every variable with safe defaults. `data/` is gitignored.
+- **BR-CONF-6** The built-in backend starts only when `PUBLIC_PASSKEY_API_URL` is `/api/passkey`. Otherwise the frontend runs in local mode, the server needs no passkey configuration or database, and `/api/passkey/*` answers `404 not_found`.
 
 ---
 
@@ -80,6 +81,7 @@ SvelteKit server (adapter-node)
 | `not_signed_in` | 401 | `DELETE /account` without a valid session; session changed during "add a passkey" | "Your session has ended. Sign in again." |
 | `forbidden_origin` | 403 | `Origin` header missing or not allowed on POST/DELETE | generic¹ |
 | `unknown_credential` | 404 | The assertion's credential ID is not in the database (see BR-ERR-3) | "That passkey isn't registered here any more." + Signal API |
+| `not_found` | 404 | The built-in backend is off (BR-CONF-6) | generic¹ |
 | `username_taken` | 409 | The name belongs to another account | "That username is taken. Pick another one." |
 | `payload_too_large` | 413 | Body over 64 KiB | generic¹ |
 | `unsupported_media_type` | 415 | POST without `application/json` | generic¹ |
@@ -317,7 +319,7 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 - **BR-OPS-4** Behind a reverse proxy, adapter-node's `ORIGIN` (or `PROTOCOL_HEADER` + `HOST_HEADER`) and `ADDRESS_HEADER` are set, so origin checks and rate limits see real values.
 - **BR-OPS-5** One server process is assumed (SQLite, in-memory rate limits). Scaling out needs a shared rate-limit store and a server database — out of scope.
 - **BR-OPS-6** The service worker only caches page navigations, so `/api/*` responses are never served from a cache. This MUST stay true.
-- **BR-OPS-7** MAY expose `GET /api/health` returning `200 { "ok": true }` after a trivial database query.
+- **BR-OPS-7** MAY expose `GET /api/health` returning `200 { "ok": true, "passkeyBackend": "on" | "off" }` after a trivial database query.
 
 ---
 
