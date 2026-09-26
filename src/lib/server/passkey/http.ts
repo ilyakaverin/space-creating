@@ -10,7 +10,7 @@
 import { dev } from "$app/environment";
 import { type RequestEvent, type RequestHandler, json } from "@sveltejs/kit";
 import type { PasskeyBackend } from "./backend";
-import type { RequestContext } from "./ceremonies";
+import { type RequestContext, requestFields } from "./ceremonies";
 import type { PasskeyConfig } from "./config";
 import { ApiError, type ErrorCode } from "./errors";
 import { redact } from "./log";
@@ -33,8 +33,11 @@ export interface PasskeyRequest {
 	context: RequestContext;
 }
 
+/** Reading methods never change state, so they need no Origin check. */
+const SAFE_METHODS = new Set(["GET", "HEAD"]);
+
 /**
- * Browsers send an Origin header on every non-GET fetch, same-origin
+ * Browsers send an Origin header on every POST and DELETE fetch, same-origin
  * included. Anything else did not come from our page (BR-SEC-2, FR-SEC-6).
  */
 const checkOrigin = (request: Request, config: PasskeyConfig): void => {
@@ -49,13 +52,14 @@ const checkOrigin = (request: Request, config: PasskeyConfig): void => {
 
 const toErrorResponse = (
 	cause: unknown,
-	requestId: string,
+	context: RequestContext,
 	path: string,
 	backend: PasskeyBackend | null,
 ): Response => {
+	const { requestId } = context;
 	if (cause instanceof ApiError) {
 		backend?.log("request_rejected", {
-			requestId,
+			...requestFields(context),
 			path,
 			code: cause.code,
 			reason: redact(cause.message),
@@ -80,7 +84,14 @@ const toErrorResponse = (
 export const passkeyEndpoint =
 	(handler: (request: PasskeyRequest) => Promise<Response>): RequestHandler =>
 	async (event) => {
-		const requestId = crypto.randomUUID();
+		const context: RequestContext = {
+			user: event.locals.user,
+			sessionTokenHash: event.locals.sessionTokenHash,
+			flowId: null,
+			clientAddress: () => event.getClientAddress(),
+			userAgent: event.request.headers.get("user-agent"),
+			requestId: crypto.randomUUID(),
+		};
 		let backend: PasskeyBackend | null = null;
 		let response: Response;
 		try {
@@ -91,23 +102,12 @@ export const passkeyEndpoint =
 					"The built-in passkey backend is off; set PUBLIC_PASSKEY_API_URL=/api/passkey to use it.",
 				);
 			}
-			if (event.request.method !== "GET") {
+			if (!SAFE_METHODS.has(event.request.method)) {
 				checkOrigin(event.request, backend.config);
 			}
-			response = await handler({
-				event,
-				backend,
-				context: {
-					user: event.locals.user,
-					sessionTokenHash: event.locals.sessionTokenHash,
-					flowId: null,
-					clientAddress: event.getClientAddress(),
-					userAgent: event.request.headers.get("user-agent"),
-					requestId,
-				},
-			});
+			response = await handler({ event, backend, context });
 		} catch (cause) {
-			response = toErrorResponse(cause, requestId, event.url.pathname, backend);
+			response = toErrorResponse(cause, context, event.url.pathname, backend);
 		}
 		// Session answers must never be cached by the browser or a proxy (BR-GEN-3).
 		response.headers.set("Cache-Control", "no-store");

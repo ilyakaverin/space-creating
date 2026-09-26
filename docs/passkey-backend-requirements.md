@@ -54,7 +54,7 @@ SvelteKit server (adapter-node)
 - **BR-CONF-3** Every environment (dev, staging, prod) has its own RP ID and database. Passkeys registered for one RP ID never work on another; this is expected, not a bug.
 - **BR-CONF-4** Development uses `PASSKEY_ORIGIN=http://localhost:3000` (`pnpm dev`, also the default in development) or the port actually served. The LAN address printed by `pnpm dev` is not a secure context and cannot be used.
 - **BR-CONF-5** Local settings go in `.env` (gitignored); a committed `.env.example` lists every variable with safe defaults. `data/` is gitignored.
-- **BR-CONF-6** The built-in backend starts only when `PUBLIC_PASSKEY_API_URL` is `/api/passkey`. Otherwise the frontend runs in local mode, the server needs no passkey configuration or database, and `/api/passkey/*` answers `404 not_found`.
+- **BR-CONF-6** The built-in backend starts only when `PUBLIC_PASSKEY_API_URL` is `/api/passkey`. Otherwise the frontend runs in local mode, the server needs no passkey configuration or database, and `/api/passkey/*` answers `404 not_found`. When the variable is set to anything else, the server logs once that the built-in backend is off.
 
 ---
 
@@ -195,7 +195,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-CH-5** Single use: redeeming deletes the row atomically (e.g. `DELETE … RETURNING`) **before** any cryptographic verification, so a replayed or failing response can never use it again.
 - **BR-CH-6** Redeem outcomes: not found, already used, other flow or wrong type → `400 verification_failed`; found but expired → `400 challenge_expired`.
 - **BR-CH-7** Several outstanding challenges per flow are allowed (the autofill request and a button-triggered ceremony overlap briefly). At most 5 are kept per flow; issuing a sixth drops the oldest.
-- **BR-CH-8** Expired rows are removed periodically (BR-OPS-2).
+- **BR-CH-8** Expired rows are kept for one hour, so a late answer (e.g. a passkey picked from autofill in a tab left open) is told `challenge_expired`, and then removed by the periodic cleanup (BR-OPS-2).
 - **BR-CH-9** Challenge values are never logged.
 
 ---
@@ -203,7 +203,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 ## 6. Sessions and Cookies (FR-AUTH-5, FR-SEC-5)
 
 ### 6.1 Session cookie
-- **BR-COOK-1** Name `__Host-session` in production. Over `http://localhost` in development the name is `session` without `Secure`, because not every browser accepts `Secure` cookies on plain http.
+- **BR-COOK-1** Name `__Host-passkey-session` in production. Over `http://localhost` in development the name is `passkey-session` without `Secure`, because not every browser accepts `Secure` cookies on plain http. Cookies are not separated by port, so the name is specific enough not to clash with other apps on localhost.
 - **BR-COOK-2** Attributes: `HttpOnly`, `Secure` (production), `SameSite=Lax`, `Path=/`, `Max-Age` = the session TTL. No `Domain`.
 - **BR-COOK-3** Value: 32 random bytes, base64url. The database stores only the SHA-256 of the token, so a database leak does not expose usable sessions.
 - **BR-COOK-4** Rotation: every successful registration or authentication creates a new session and deletes the one the request carried (prevents session fixation).
@@ -213,7 +213,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-COOK-8** Tokens never appear in response bodies, URLs or logs. The frontend stores no secret anywhere.
 
 ### 6.2 Flow cookie
-- **BR-COOK-9** Name `__Host-passkey-flow` (development: `passkey-flow`, no `Secure`); `HttpOnly`, `SameSite=Strict`, `Path=/`; value 16 random bytes, base64url; `Max-Age` = challenge lifetime, refreshed whenever options are issued. It only links challenges to a browser and grants no access by itself.
+- **BR-COOK-9** Name `__Host-passkey-flow` (development: `passkey-flow`, no `Secure`); `HttpOnly`, `SameSite=Strict`, `Path=/`; value 16 random bytes, base64url; `Max-Age` one day, refreshed whenever options are issued — longer than the challenges, so it is still present when a late answer arrives (BR-CH-8). It only links challenges to a browser and grants no access by itself.
 
 ---
 
@@ -238,7 +238,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-WA-12** User Present set; User Verified not required (`requireUserVerification: false`).
 - **BR-WA-13** **Backend:** `userHandle` matches the credential's owner (BR-AUTHV-4).
 - **BR-WA-14** The signature over `authenticatorData ‖ SHA-256(clientDataJSON)` verifies with the stored public key.
-- **BR-WA-15** Sign counter: if the stored or the received counter is non-zero, the received one MUST be greater, otherwise → `verification_failed` and a `counter_regression` security log entry (possible cloned authenticator). `0`/`0` — typical for synced passkeys — is fine.
+- **BR-WA-15** Sign counter: if the stored or the received counter is non-zero, the received one MUST be greater, otherwise → `verification_failed` and a `counter_regression` security log entry (possible cloned authenticator). `0`/`0` — typical for synced passkeys — is fine. The comparison runs only after the signature verified (so unauthenticated requests cannot trigger the log entry) and as one compare-and-set update (so concurrent sign-ins cannot lower the stored counter).
 - **BR-WA-16** Backup Eligible MUST NOT change from its stored value; Backup State may change and is updated.
 
 ### 7.3 Policy summary
@@ -302,8 +302,8 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 - **BR-SEC-2** Every POST and DELETE MUST carry an `Origin` header equal to one of `PASSKEY_ORIGIN`, otherwise → `403 forbidden_origin`. Browsers send `Origin` on all non-GET fetches, including same-origin ones.
 - **BR-SEC-3** CSRF (FR-SEC-6): state changes need JSON POST or DELETE, which a cross-site page cannot send without a CORS preflight; the backend answers no preflight, `SameSite` cookies are not sent cross-site, and BR-SEC-2 checks the origin anyway. SvelteKit's built-in origin check still covers form posts.
 - **BR-SEC-4** No CORS headers while the API is same-origin. If the API is ever split off: an exact origin allow-list, `Access-Control-Allow-Credentials: true`, methods `GET, POST, DELETE`, header `Content-Type` — never `*`.
-- **BR-SEC-5** Rate limits per client IP (in memory, fine for one process): options endpoints 30/min, verify endpoints 10/min, registration options for one username 5/min. Excess → `429 rate_limited` with `Retry-After`. Behind a proxy the IP comes from `ADDRESS_HEADER` (§10).
-- **BR-SEC-6** Account enumeration: only `/registration/options` reveals whether a name exists (inherent to FR-ERR-2) and it is rate-limited; `/authentication/options` is never user-specific.
+- **BR-SEC-5** Rate limits per client IP (in memory, fine for one process): options endpoints 30/min, verify endpoints 10/min. There is deliberately no per-username limit: anyone could use it up for someone else's name and stop them from adding a passkey. Excess → `429 rate_limited` with `Retry-After`. Behind a proxy the IP comes from `ADDRESS_HEADER` (§10).
+- **BR-SEC-6** Account enumeration: only `/registration/options` reveals whether a name exists (inherent to FR-ERR-2), and probing is bounded by its per-IP limit; `/authentication/options` is never user-specific.
 - **BR-SEC-7** The server never sees private keys (FR-SEC-4); session tokens are stored only as hashes; no secret is ever returned in a body.
 - **BR-SEC-8** Security events are logged as structured JSON with request ID, user handle, credential ID, IP and user agent: registration, sign-in success and failure (with the failed check), `counter_regression`, `unknown_credential`, sign-out, account deletion, rate limiting. Cookies, tokens, challenges and full credential payloads are never logged.
 - **BR-SEC-9** Strict schema validation and size limits (BR-GEN-2) run before any lookup or crypto.
@@ -314,7 +314,7 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 ## 10. Operations
 
 - **BR-OPS-1** Startup order: validate configuration, open the database, run migrations, then accept requests. Any failure stops the process.
-- **BR-OPS-2** Expired challenges and sessions are deleted at startup and every 10 minutes.
+- **BR-OPS-2** Expired challenges (after BR-CH-8's retention) and sessions are deleted at startup and every 10 minutes. A failure during the periodic run is logged and retried at the next run; it must never stop the server.
 - **BR-OPS-3** The SQLite file is backed up with the online backup API or `VACUUM INTO`, never by copying the live file. Losing it orphans every passkey.
 - **BR-OPS-4** Behind a reverse proxy, adapter-node's `ORIGIN` (or `PROTOCOL_HEADER` + `HOST_HEADER`) and `ADDRESS_HEADER` are set, so origin checks and rate limits see real values.
 - **BR-OPS-5** One server process is assumed (SQLite, in-memory rate limits). Scaling out needs a shared rate-limit store and a server database — out of scope.

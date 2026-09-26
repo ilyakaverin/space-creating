@@ -90,10 +90,14 @@ export const parseConfig = (
 			"Set PASSKEY_ORIGIN (or adapter-node's ORIGIN) to the site's origin, e.g. https://example.com.",
 		);
 	}
-	const urls = originList
+	const entries = originList
 		.split(",")
 		.map((value) => value.trim())
-		.filter(Boolean)
+		.filter(Boolean);
+	if (originList && entries.length === 0) {
+		problems.push(`PASSKEY_ORIGIN "${originList}" lists no origin.`);
+	}
+	const urls = entries
 		.map((value) => parseOrigin(value, problems))
 		.filter((url): url is URL => url !== null);
 

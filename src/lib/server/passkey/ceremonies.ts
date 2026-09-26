@@ -48,10 +48,26 @@ export interface RequestContext {
 	sessionTokenHash: string | null;
 	/** From the flow cookie that ties challenges to this browser; null if absent. */
 	flowId: string | null;
-	clientAddress: string;
+	/**
+	 * The client's IP address. A function because adapter-node throws when
+	 * ADDRESS_HEADER is configured but missing from a request; only the
+	 * rate-limited ceremonies need it, so the other endpoints keep working.
+	 */
+	clientAddress(): string;
 	userAgent: string | null;
 	requestId: string;
 }
+
+/** Who made the request, for every security log entry (BR-SEC-8). */
+export const requestFields = (context: RequestContext) => {
+	let ip: string | null = null;
+	try {
+		ip = context.clientAddress();
+	} catch {
+		// Logged without an address rather than not at all.
+	}
+	return { requestId: context.requestId, ip, userAgent: context.userAgent };
+};
 
 /** Options endpoints always have a flow ID: they create the cookie if needed. */
 type WithFlow = RequestContext & { flowId: string };
@@ -105,34 +121,6 @@ const rejectCrossOrigin = (clientData: ClientData): void => {
 	}
 };
 
-/**
- * Authenticator data layout: rpIdHash (32 bytes) · flags (1) · signCount
- * (4, big-endian) · … Read here so a counter regression can be logged as
- * such instead of as a generic failure (BR-WA-15).
- */
-export const readSignCount = (authenticatorData: string): number => {
-	const bytes = isoBase64URL.toBuffer(authenticatorData);
-	if (bytes.length < 37) {
-		throw new ApiError(
-			"verification_failed",
-			"authenticatorData is too short.",
-		);
-	}
-	return new DataView(
-		bytes.buffer,
-		bytes.byteOffset,
-		bytes.byteLength,
-	).getUint32(33);
-};
-
-/**
- * An authenticator that counts must report a larger number every time; one
- * that does not grow suggests a cloned authenticator (BR-WA-15). Synced
- * passkeys always report 0, and 0 after 0 is fine.
- */
-export const signCountRegressed = (stored: number, received: number): boolean =>
-	(received > 0 || stored > 0) && received <= stored;
-
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -146,7 +134,7 @@ export const startRegistration = async (
 	context: WithFlow,
 	body: unknown,
 ): Promise<PublicKeyCredentialCreationOptionsJSON> => {
-	limiter.consume(`options:${context.clientAddress}`, RATE_LIMITS.options);
+	limiter.consume(`options:${context.clientAddress()}`, RATE_LIMITS.options);
 	if (!isRecord(body)) {
 		throw new ApiError(
 			"invalid_request",
@@ -154,10 +142,6 @@ export const startRegistration = async (
 		);
 	}
 	const userName = parseUserName(body.userName);
-	limiter.consume(
-		`registration-name:${userName.key}`,
-		RATE_LIMITS.registrationName,
-	);
 
 	let user: User;
 	if (context.user) {
@@ -227,17 +211,17 @@ export const finishRegistration = async (
 	context: RequestContext,
 	body: unknown,
 ): Promise<SignedIn> => {
-	limiter.consume(`verify:${context.clientAddress}`, RATE_LIMITS.verify);
+	limiter.consume(`verify:${context.clientAddress()}`, RATE_LIMITS.verify);
 	const response = parseRegistrationResponse(body);
 	const clientData = decodeClientData(response.response.clientDataJSON);
-	rejectCrossOrigin(clientData);
 
-	// Used up here, before any crypto: a replay or a failed attempt can never reuse it.
+	// Used up first, before any other check: a replay or a failed attempt can never reuse it.
 	const challenge = challenges.redeem({
 		challenge: clientData.challenge,
 		flowId: context.flowId,
 		type: "registration",
 	});
+	rejectCrossOrigin(clientData);
 
 	// Adding a passkey: the session that asked for the options must still be
 	// the one signed in (BR-REGV-3).
@@ -331,7 +315,7 @@ export const finishRegistration = async (
 	})();
 
 	log("registration", {
-		requestId: context.requestId,
+		...requestFields(context),
 		userId: signedInUser.id,
 		credentialId: info.credential.id,
 		newAccount,
@@ -349,7 +333,7 @@ export const startAuthentication = async (
 	{ challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
 ): Promise<PublicKeyCredentialRequestOptionsJSON> => {
-	limiter.consume(`options:${context.clientAddress}`, RATE_LIMITS.options);
+	limiter.consume(`options:${context.clientAddress()}`, RATE_LIMITS.options);
 	const options = await generateAuthenticationOptions({
 		rpID: config.rpId,
 		challenge: randomBytes32(),
@@ -373,15 +357,16 @@ export const finishAuthentication = async (
 	context: RequestContext,
 	body: unknown,
 ): Promise<SignedIn> => {
-	limiter.consume(`verify:${context.clientAddress}`, RATE_LIMITS.verify);
+	limiter.consume(`verify:${context.clientAddress()}`, RATE_LIMITS.verify);
 	const response = parseAuthenticationResponse(body);
 	const clientData = decodeClientData(response.response.clientDataJSON);
-	rejectCrossOrigin(clientData);
+	// Used up first, before any other check: a replay or a failed attempt can never reuse it.
 	challenges.redeem({
 		challenge: clientData.challenge,
 		flowId: context.flowId,
 		type: "authentication",
 	});
+	rejectCrossOrigin(clientData);
 
 	// Only here may unknown_credential be answered: the frontend then asks the
 	// password manager to hide this passkey (BR-ERR-3).
@@ -389,7 +374,7 @@ export const finishAuthentication = async (
 	const owner = stored ? accounts.findUser(stored.userId) : null;
 	if (!stored || !owner) {
 		log("unknown_credential", {
-			requestId: context.requestId,
+			...requestFields(context),
 			credentialId: response.id,
 		});
 		throw new ApiError("unknown_credential", "No account uses this passkey.");
@@ -401,19 +386,6 @@ export const finishAuthentication = async (
 		throw verificationFailed(
 			"The user handle does not match the passkey's account.",
 		);
-	}
-
-	// Checked before the library does the same, so it can be logged as such.
-	const signCount = readSignCount(response.response.authenticatorData);
-	if (signCountRegressed(stored.counter, signCount)) {
-		log("counter_regression", {
-			requestId: context.requestId,
-			userId: owner.id,
-			credentialId: stored.id,
-			stored: stored.counter,
-			received: signCount,
-		});
-		throw verificationFailed("The signature counter did not increase.");
 	}
 
 	// The library checks type, challenge, origin, RP ID hash, user presence and
@@ -428,7 +400,10 @@ export const finishAuthentication = async (
 			credential: {
 				id: stored.id,
 				publicKey: new Uint8Array(stored.publicKey),
-				counter: stored.counter,
+				// 0 turns off the library's own counter check. The counter is compared
+				// below instead: only after the signature has proven the response is
+				// genuine, and atomically, so concurrent sign-ins cannot lower it.
+				counter: 0,
 				transports: stored.transports,
 			},
 			requireUserVerification: false,
@@ -448,10 +423,21 @@ export const finishAuthentication = async (
 	}
 
 	const session = db.transaction(() => {
-		accounts.recordSignIn(stored.id, {
+		const counterAdvanced = accounts.recordSignIn(stored.id, {
 			counter: info.newCounter,
 			backedUp: info.credentialBackedUp,
 		});
+		// A genuine signature with a counter that did not grow suggests a cloned
+		// authenticator (BR-WA-15). Throwing rolls the transaction back.
+		if (!counterAdvanced) {
+			log("counter_regression", {
+				...requestFields(context),
+				userId: owner.id,
+				credentialId: stored.id,
+				received: info.newCounter,
+			});
+			throw verificationFailed("The signature counter did not increase.");
+		}
 		if (context.sessionTokenHash) {
 			sessions.revoke(context.sessionTokenHash);
 		}
@@ -459,7 +445,7 @@ export const finishAuthentication = async (
 	})();
 
 	log("sign_in", {
-		requestId: context.requestId,
+		...requestFields(context),
 		userId: owner.id,
 		credentialId: stored.id,
 		userVerified: info.userVerified,
@@ -478,7 +464,7 @@ export const signOut = (
 ): void => {
 	if (context.sessionTokenHash) {
 		sessions.revoke(context.sessionTokenHash);
-		log("sign_out", { requestId: context.requestId, userId: context.user?.id });
+		log("sign_out", { ...requestFields(context), userId: context.user?.id });
 	}
 };
 
@@ -495,7 +481,7 @@ export const deleteAccount = (
 	}
 	accounts.deleteUser(context.user.id);
 	log("account_deleted", {
-		requestId: context.requestId,
+		...requestFields(context),
 		userId: context.user.id,
 	});
 };

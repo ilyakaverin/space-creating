@@ -23,13 +23,15 @@ import {
 export const API_PATH = "/api/passkey";
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 
+const configuredApiUrl = (): string =>
+	publicEnv.PUBLIC_PASSKEY_API_URL?.trim().replace(/\/+$/, "") ?? "";
+
 /**
  * The built-in backend runs only when the frontend is pointed at it. Without
  * PUBLIC_PASSKEY_API_URL the frontend keeps passkeys in the browser and the
  * server needs no configuration or database at all.
  */
-export const isBackendEnabled = (): boolean =>
-	publicEnv.PUBLIC_PASSKEY_API_URL?.trim().replace(/\/+$/, "") === API_PATH;
+export const isBackendEnabled = (): boolean => configuredApiUrl() === API_PATH;
 
 /**
  * Kept on globalThis so Vite's hot reload in development reuses the open
@@ -38,6 +40,20 @@ export const isBackendEnabled = (): boolean =>
  */
 const holder = globalThis as typeof globalThis & {
 	passkeyBackend?: PasskeyBackend;
+	passkeyBackendOffWarned?: boolean;
+};
+
+/**
+ * The cleanup runs on a timer, outside any request: an error there (a full
+ * disk, a locked database) would otherwise crash the whole server. It is
+ * logged instead, and the next run tries again.
+ */
+const cleanupSafely = (backend: PasskeyBackend): void => {
+	try {
+		cleanupExpired(backend);
+	} catch (error) {
+		console.error("[passkey] cleanup of expired rows failed:", error);
+	}
 };
 
 /**
@@ -46,14 +62,27 @@ const holder = globalThis as typeof globalThis & {
  * start half-working (BR-CONF-1, BR-OPS-1). Returns null when disabled.
  */
 export const passkeyBackend = (): PasskeyBackend | null => {
-	if (building || !isBackendEnabled()) {
+	if (building) {
+		return null;
+	}
+	if (!isBackendEnabled()) {
+		// Pointing the frontend at a different URL is legitimate (a separate
+		// backend), but "https://this-site/api/passkey" would silently leave
+		// this one off, so say so once.
+		if (configuredApiUrl() && !holder.passkeyBackendOffWarned) {
+			holder.passkeyBackendOffWarned = true;
+			console.warn(
+				`[passkey] The built-in backend is off: PUBLIC_PASSKEY_API_URL is "${configuredApiUrl()}", not "${API_PATH}".`,
+			);
+		}
 		return null;
 	}
 	if (!holder.passkeyBackend) {
 		const backend = createPasskeyBackend(parseConfig(privateEnv, { dev }));
+		// At startup a failure should stop the server, so no safety net here.
 		cleanupExpired(backend);
 		// unref: the timer alone must not keep the process alive on shutdown.
-		setInterval(() => cleanupExpired(backend), CLEANUP_INTERVAL_MS).unref();
+		setInterval(() => cleanupSafely(backend), CLEANUP_INTERVAL_MS).unref();
 		holder.passkeyBackend = backend;
 	}
 	return holder.passkeyBackend;

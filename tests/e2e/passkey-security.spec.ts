@@ -3,8 +3,10 @@
  * (docs/passkey-backend-requirements.md BR-TEST-3). Expired challenges are
  * covered by the unit tests, which control the clock.
  */
+import { request } from "@playwright/test";
 import { BASE_URL } from "../../playwright.config";
 import {
+	SESSION_COOKIE,
 	apiClient,
 	expect,
 	openApp,
@@ -160,6 +162,18 @@ test("requests that did not come from the page are refused", async () => {
 	await client.dispose();
 });
 
+test("reading the session needs neither an Origin nor a client address", async () => {
+	// No x-test-client-ip header: only the rate-limited ceremonies need the
+	// address, so a proxy that drops the header must not break session lookups.
+	const client = await request.newContext({ baseURL: BASE_URL });
+	const get = await client.get("/api/passkey/session");
+	expect(get.status()).toBe(200);
+	expect(await get.json()).toEqual({ user: null });
+	// HEAD is answered by the GET handler and, like GET, needs no Origin.
+	expect((await client.head("/api/passkey/session")).status()).toBe(200);
+	await client.dispose();
+});
+
 test("options endpoints are rate limited per client", async () => {
 	const client = await apiClient();
 	const post = () =>
@@ -191,15 +205,18 @@ test("session and flow cookies carry the required attributes", async ({
 		app.createAccount(uniqueName()),
 	]);
 
-	// http://localhost cannot use Secure / __Host-, so the plain names are used here.
+	// http://localhost cannot use Secure / __Host-, so the unprefixed names are used here.
 	const flowCookie = await optionsResponse.headerValue("set-cookie");
 	expect(flowCookie).toMatch(/^passkey-flow=/);
 	expect(flowCookie).toContain("HttpOnly");
 	expect(flowCookie).toContain("SameSite=Strict");
-	expect(flowCookie).toContain("Max-Age=330");
+	// Outlives its challenges, so a late answer can still be told "expired".
+	expect(flowCookie).toContain("Max-Age=86400");
 
 	const sessionCookie = await verifyResponse.headerValue("set-cookie");
-	expect(sessionCookie).toMatch(/^session=[A-Za-z0-9_-]{43};/);
+	expect(sessionCookie).toMatch(
+		new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43};`),
+	);
 	expect(sessionCookie).toContain("HttpOnly");
 	expect(sessionCookie).toContain("SameSite=Lax");
 	expect(sessionCookie).toContain("Path=/");
@@ -212,12 +229,14 @@ test("signing out invalidates the session on the server, not just the cookie", a
 	await app.goto();
 	await app.createAccount(uniqueName());
 	const cookie = (await app.context.cookies()).find(
-		(entry) => entry.name === "session",
+		(entry) => entry.name === SESSION_COOKIE,
 	);
 	expect(cookie).toBeDefined();
 	await app.click("Sign out");
 
-	const client = await apiClient({ cookie: `session=${cookie?.value}` });
+	const client = await apiClient({
+		cookie: `${SESSION_COOKIE}=${cookie?.value}`,
+	});
 	const response = await client.get("/api/passkey/session");
 	expect(await response.json()).toEqual({ user: null });
 	await client.dispose();

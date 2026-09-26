@@ -18,6 +18,9 @@ import { BASE_URL } from "../../playwright.config";
 /** Header the test server reads the client address from (see playwright.config.ts). */
 const CLIENT_IP_HEADER = "x-test-client-ip";
 
+/** Over http://localhost the session cookie cannot carry the __Host- prefix. */
+export const SESSION_COOKIE = "passkey-session";
+
 export const uniqueName = (): string => `user-${randomUUID().slice(0, 8)}`;
 
 /** Opens the test database; close it after use. */

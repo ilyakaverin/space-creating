@@ -8,21 +8,28 @@
  * With https origins the names get the `__Host-` prefix: browsers then refuse
  * the cookie unless it is Secure, has Path=/ and no Domain, so a subdomain can
  * neither read nor plant it. Over http://localhost that is impossible, so
- * development uses plain names.
+ * development drops the prefix. The names say "passkey" because cookies are
+ * not separated by port: a plain "session" would clash with other apps
+ * running on localhost.
  */
 import { randomBytes } from "node:crypto";
 import type { Cookies } from "@sveltejs/kit";
-import { CHALLENGE_TTL_MS } from "./challenges";
 import type { PasskeyConfig } from "./config";
 import type { NewSession } from "./sessions";
 
 /** 16 random bytes in base64url. */
 const FLOW_ID_FORMAT = /^[A-Za-z0-9_-]{22}$/;
+/**
+ * The flow cookie outlives its challenges: it is only a random ID, and it
+ * must still be there when a late answer arrives, so the server can tell the
+ * user the challenge expired instead of rejecting it as unknown.
+ */
+const FLOW_COOKIE_MAX_AGE_S = 24 * 60 * 60;
 
 const names = ({ secureCookies }: PasskeyConfig) =>
 	secureCookies
-		? { session: "__Host-session", flow: "__Host-passkey-flow" }
-		: { session: "session", flow: "passkey-flow" };
+		? { session: "__Host-passkey-session", flow: "__Host-passkey-flow" }
+		: { session: "passkey-session", flow: "passkey-flow" };
 
 const sessionAttributes = (config: PasskeyConfig) =>
 	({
@@ -57,7 +64,7 @@ export const clearSessionCookie = (
 
 /**
  * For the options endpoints: reuses this browser's flow ID or starts one, and
- * keeps the cookie alive exactly as long as the newest challenge.
+ * renews the cookie's lifetime.
  */
 export const useFlowId = (cookies: Cookies, config: PasskeyConfig): string => {
 	const existing = readFlowId(cookies, config);
@@ -68,7 +75,7 @@ export const useFlowId = (cookies: Cookies, config: PasskeyConfig): string => {
 		secure: config.secureCookies,
 		// Only ever needed by our own fetches, never on navigation from elsewhere.
 		sameSite: "strict",
-		maxAge: CHALLENGE_TTL_MS / 1000,
+		maxAge: FLOW_COOKIE_MAX_AGE_S,
 	});
 	return flowId;
 };

@@ -3,6 +3,7 @@
  * backend (docs/passkey-backend-requirements.md BR-TEST-2).
  */
 import {
+	SESSION_COOKIE,
 	apiClient,
 	expect,
 	openApp,
@@ -149,8 +150,9 @@ test("deleting the account removes it everywhere and ends the session", async ({
 		name,
 	);
 	const cookie = (await app.context.cookies()).find(
-		(entry) => entry.name === "session",
+		(entry) => entry.name === SESSION_COOKIE,
 	);
+	expect(cookie).toBeDefined();
 
 	await app.click("Delete account");
 	expect(await app.signedInAs()).toBeNull();
@@ -162,7 +164,9 @@ test("deleting the account removes it everywhere and ends the session", async ({
 	}
 
 	// The old cookie no longer means anything to the server.
-	const client = await apiClient({ cookie: `session=${cookie?.value}` });
+	const client = await apiClient({
+		cookie: `${SESSION_COOKIE}=${cookie?.value}`,
+	});
 	const response = await client.get("/api/passkey/session");
 	expect(await response.json()).toEqual({ user: null });
 	await client.dispose();

@@ -65,6 +65,10 @@ describe("parseConfig", () => {
 		expect(problems[1]).toMatch(/SESSION_TTL_DAYS/);
 	});
 
+	it("rejects an origin list with no origins in it", () => {
+		expect(problemsOf({ PASSKEY_ORIGIN: " , " })[0]).toMatch(/lists no origin/);
+	});
+
 	it("rejects an IP address as RP ID", () => {
 		expect(
 			problemsOf({ PASSKEY_ORIGIN: "https://127.0.0.1" }).join(" "),

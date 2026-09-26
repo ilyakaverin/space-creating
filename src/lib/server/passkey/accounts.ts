@@ -59,10 +59,14 @@ export interface AccountStore {
 	findCredential(id: string): StoredCredential | null;
 	/** Throws `verification_failed` if the credential ID is already stored. */
 	addCredential(credential: NewCredential): void;
+	/**
+	 * Stores the counter and backup state after a verified sign-in. Returns
+	 * false, changing nothing, if the counter did not grow (BR-WA-15).
+	 */
 	recordSignIn(
 		id: string,
 		update: { counter: number; backedUp: boolean },
-	): void;
+	): boolean;
 }
 
 const toUser = (row: UserRow): User => ({
@@ -71,10 +75,16 @@ const toUser = (row: UserRow): User => ({
 	displayName: row.display_name,
 });
 
-const isConstraintError = (error: unknown): boolean =>
+/**
+ * A duplicate key: the name or credential ID already exists. Other constraint
+ * failures (such as a foreign key to an account deleted meanwhile) are not
+ * duplicates and stay unexpected errors.
+ */
+const isDuplicateKey = (error: unknown): boolean =>
 	error instanceof Error &&
 	"code" in error &&
-	String(error.code).startsWith("SQLITE_CONSTRAINT");
+	(error.code === "SQLITE_CONSTRAINT_UNIQUE" ||
+		error.code === "SQLITE_CONSTRAINT_PRIMARYKEY");
 
 export const createAccountStore = (db: Db, now: () => number): AccountStore => {
 	const selectUser = db.prepare(
@@ -99,9 +109,13 @@ export const createAccountStore = (db: Db, now: () => number): AccountStore => {
 			(id, user_id, public_key, algorithm, counter, transports, aaguid, backup_eligible, backed_up, name, created_at, last_used_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Passkey', ?, NULL)
 	`);
-	const updateAfterSignIn = db.prepare(
-		"UPDATE credentials SET counter = ?, backed_up = ?, last_used_at = ? WHERE id = ?",
-	);
+	// Compare-and-set in one statement, so two concurrent sign-ins can never move
+	// the counter backwards. It must grow, except for passkeys that never count
+	// (synced passkeys report 0 every time).
+	const updateAfterSignIn = db.prepare(`
+		UPDATE credentials SET counter = @counter, backed_up = @backedUp, last_used_at = @now
+		WHERE id = @id AND (counter < @counter OR (counter = 0 AND @counter = 0))
+	`);
 
 	return {
 		findUser(id) {
@@ -124,7 +138,7 @@ export const createAccountStore = (db: Db, now: () => number): AccountStore => {
 					now(),
 				);
 			} catch (error) {
-				if (isConstraintError(error)) {
+				if (isDuplicateKey(error)) {
 					throw new ApiError(
 						"username_taken",
 						`${user.name} was registered while this ceremony was running.`,
@@ -181,7 +195,7 @@ export const createAccountStore = (db: Db, now: () => number): AccountStore => {
 					now(),
 				);
 			} catch (error) {
-				if (isConstraintError(error)) {
+				if (isDuplicateKey(error)) {
 					throw new ApiError(
 						"verification_failed",
 						"This passkey is already registered.",
@@ -192,7 +206,13 @@ export const createAccountStore = (db: Db, now: () => number): AccountStore => {
 		},
 
 		recordSignIn(id, { counter, backedUp }) {
-			updateAfterSignIn.run(counter, backedUp ? 1 : 0, now(), id);
+			const { changes } = updateAfterSignIn.run({
+				id,
+				counter,
+				backedUp: backedUp ? 1 : 0,
+				now: now(),
+			});
+			return changes === 1;
 		},
 	};
 };

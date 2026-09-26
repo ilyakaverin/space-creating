@@ -3,6 +3,7 @@ import { createAccountStore } from "./accounts";
 import {
 	CHALLENGE_TTL_MS,
 	type ChallengeStore,
+	EXPIRED_RETENTION_MS,
 	MAX_CHALLENGES_PER_FLOW,
 	createChallengeStore,
 } from "./challenges";
@@ -84,10 +85,13 @@ describe("challenge store", () => {
 		).toBe("verification_failed");
 	});
 
-	it("reports expiry distinctly, and cleanup removes expired rows", () => {
+	it("reports expiry distinctly, and cleanup removes rows only after the retention period", () => {
 		store.issue({ challenge: "old", flowId: "flow", type: "authentication" });
 		store.issue({ challenge: "older", flowId: "flow", type: "authentication" });
 		time += CHALLENGE_TTL_MS;
+		// Cleanup keeps freshly expired rows, so a late answer still hears "expired".
+		expect(store.deleteExpired()).toBe(0);
+		time += EXPIRED_RETENTION_MS - 1;
 		expect(
 			codeOf(() =>
 				store.redeem({
@@ -97,6 +101,7 @@ describe("challenge store", () => {
 				}),
 			),
 		).toBe("challenge_expired");
+		time += 1;
 		expect(store.deleteExpired()).toBe(1);
 	});
 

@@ -18,8 +18,8 @@ export const RATE_LIMITS = {
 	options: { limit: 30, windowMs: MINUTE },
 	/** Per client IP, for both verify endpoints. */
 	verify: { limit: 10, windowMs: MINUTE },
-	/** Per username, for registration options: slows down probing which names exist. */
-	registrationName: { limit: 5, windowMs: MINUTE },
+	// No per-username limit: anyone could use it up for someone else's name and
+	// stop them from adding a passkey. Probing names is bounded per IP instead.
 } satisfies Record<string, RateLimitRule>;
 
 export interface RateLimiter {

@@ -30,8 +30,8 @@ The UI talks to a relying party (`src/lib/passkey/types.ts`) that issues options
 This app ships its own backend in `src/lib/server/passkey/` (SvelteKit server routes under `/api/passkey`, `@simplewebauthn/server`, SQLite via `better-sqlite3`); [its README](src/lib/server/passkey/README.md) walks through the files. It starts only when `PUBLIC_PASSKEY_API_URL=/api/passkey`.
 
 ```
-cp .env.example .env     # sets PUBLIC_PASSKEY_API_URL=/api/passkey and PASSKEY_ORIGIN
-pnpm dev                 # reads .env; passkeys are stored in data/passkeys.sqlite
+cp .env.example .env     # sets PUBLIC_PASSKEY_API_URL=/api/passkey
+pnpm dev                 # reads .env; origin defaults to http://localhost:3000; passkeys go to data/passkeys.sqlite
 ```
 
 For the production build: `pnpm build && node --env-file=.env build`, with `PASSKEY_ORIGIN` (or adapter-node's `ORIGIN`) set to the public https origin. Behind a reverse proxy also set adapter-node's `PROTOCOL_HEADER`, `HOST_HEADER` and `ADDRESS_HEADER`, so origin checks and rate limits see the real values. Back up the database with SQLite's online backup (`sqlite3 data/passkeys.sqlite ".backup backup.sqlite"`), not by copying the live file. `GET /api/health` answers `{ "ok": true, "passkeyBackend": "on" }` once the database is reachable.

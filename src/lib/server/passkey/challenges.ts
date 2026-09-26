@@ -22,6 +22,12 @@ export const CHALLENGE_TTL_MS = CEREMONY_TIMEOUT_MS + VERIFY_GRACE_MS;
  * ones beyond this belong to requests the frontend already aborted.
  */
 export const MAX_CHALLENGES_PER_FLOW = 5;
+/**
+ * Expired challenges are kept this long before cleanup deletes them, so a late
+ * answer — say, a passkey picked from autofill after the tab sat idle — is
+ * told "expired" rather than failing without a reason.
+ */
+export const EXPIRED_RETENTION_MS = 60 * 60 * 1000;
 
 /** The account a registration challenge would create once verified. */
 export interface PendingUser {
@@ -65,7 +71,7 @@ export interface ChallengeStore {
 		flowId: string | null;
 		type: CeremonyType;
 	}): ChallengeRecord;
-	/** Removes expired rows; returns how many. */
+	/** Removes rows expired for longer than EXPIRED_RETENTION_MS; returns how many. */
 	deleteExpired(): number;
 }
 
@@ -132,8 +138,8 @@ export const createChallengeStore = (
 					`A ${row.type} challenge was presented for ${type}.`,
 				);
 			}
-			// Expired rows linger until the periodic cleanup, which is what lets
-			// the UI say "expired" instead of a vaguer failure.
+			// Expired rows are kept for a while (EXPIRED_RETENTION_MS), which is
+			// what lets the UI say "expired" instead of a vaguer failure.
 			if (row.expires_at <= now()) {
 				throw new ApiError(
 					"challenge_expired",
@@ -157,7 +163,7 @@ export const createChallengeStore = (
 		},
 
 		deleteExpired() {
-			return removeExpired.run(now()).changes;
+			return removeExpired.run(now() - EXPIRED_RETENTION_MS).changes;
 		},
 	};
 };
