@@ -23,13 +23,12 @@ describe("parseConfig", () => {
 			databasePath: "data/passkeys.sqlite",
 			sessionTtlMs: 30 * 24 * 60 * 60 * 1000,
 			secureCookies: true,
+			clientIpHeader: "x-forwarded-for",
+			xffDepth: 1,
 		});
 	});
 
-	it("falls back to adapter-node's ORIGIN, and to localhost:3000 in development", () => {
-		expect(parseConfig({ ORIGIN: "https://example.com" }).origins).toEqual([
-			"https://example.com",
-		]);
+	it("defaults to localhost:3000 in development", () => {
 		const devConfig = parseConfig({}, { dev: true });
 		expect(devConfig.origins).toEqual(["http://localhost:3000"]);
 		expect(devConfig.secureCookies).toBe(false);
@@ -67,6 +66,23 @@ describe("parseConfig", () => {
 
 	it("rejects an origin list with no origins in it", () => {
 		expect(problemsOf({ PASSKEY_ORIGIN: " , " })[0]).toMatch(/lists no origin/);
+	});
+
+	it("reads the client address from a configurable header", () => {
+		const config = parseConfig({
+			PASSKEY_ORIGIN: "https://example.com",
+			PASSKEY_CLIENT_IP_HEADER: "X-Real-IP",
+			PASSKEY_XFF_DEPTH: "2",
+		});
+		expect(config.clientIpHeader).toBe("x-real-ip");
+		expect(config.xffDepth).toBe(2);
+		expect(
+			problemsOf({
+				PASSKEY_ORIGIN: "https://example.com",
+				PASSKEY_CLIENT_IP_HEADER: "x real ip",
+				PASSKEY_XFF_DEPTH: "0",
+			}),
+		).toHaveLength(2);
 	});
 
 	it("rejects an IP address as RP ID", () => {

@@ -1,0 +1,21 @@
+.main {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	border: 1px solid transparent;
+	min-height: calc(100% - 20px);
+	margin: 1vw;
+}
+
+.logo {
+	animation: scaleUp 1s ease-in-out infinite;
+}
+
+@keyframes scaleUp {
+	from {
+		transform: scale(1);
+	}
+	to {
+		transform: scale(1.2);
+	}
+}

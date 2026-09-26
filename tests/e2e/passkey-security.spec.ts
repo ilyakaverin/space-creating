@@ -209,7 +209,7 @@ test("session and flow cookies carry the required attributes", async ({
 	const flowCookie = await optionsResponse.headerValue("set-cookie");
 	expect(flowCookie).toMatch(/^passkey-flow=/);
 	expect(flowCookie).toContain("HttpOnly");
-	expect(flowCookie).toContain("SameSite=Strict");
+	expect(flowCookie).toMatch(/SameSite=Strict/i);
 	// Outlives its challenges, so a late answer can still be told "expired".
 	expect(flowCookie).toContain("Max-Age=86400");
 
@@ -218,7 +218,7 @@ test("session and flow cookies carry the required attributes", async ({
 		new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43};`),
 	);
 	expect(sessionCookie).toContain("HttpOnly");
-	expect(sessionCookie).toContain("SameSite=Lax");
+	expect(sessionCookie).toMatch(/SameSite=Lax/i);
 	expect(sessionCookie).toContain("Path=/");
 	expect(sessionCookie).toContain("Expires=");
 });

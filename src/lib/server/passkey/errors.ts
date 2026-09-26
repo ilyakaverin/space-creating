@@ -43,7 +43,22 @@ const STATUS: Record<ErrorCode, number> = {
 	internal_error: 500,
 };
 
+/**
+ * Next.js bundles src/instrumentation.ts apart from the route handlers, each
+ * with its own copy of this module. The backend is created at startup, so its
+ * stores throw the startup copy's ApiError, which a plain `instanceof` in a
+ * route would not recognise. Instances are therefore marked with a symbol
+ * from the global registry, which all copies share, and `instanceof` checks
+ * that mark.
+ */
+const API_ERROR: unique symbol = Symbol.for("space-creating.passkey.ApiError");
+
 export class ApiError extends Error {
+	static [Symbol.hasInstance](value: unknown): value is ApiError {
+		return typeof value === "object" && value !== null && API_ERROR in value;
+	}
+
+	readonly [API_ERROR] = true;
 	readonly code: ErrorCode;
 	readonly status: number;
 	/** Extra response headers, e.g. `Retry-After` for rate limiting. */

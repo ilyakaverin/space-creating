@@ -2,8 +2,8 @@
  * Backend configuration — docs/passkey-backend-requirements.md §2.2.
  *
  * `parseConfig` is a pure function of an environment object, so it can be
- * unit-tested; `runtime.ts` calls it once at startup with
- * `$env/dynamic/private` and the server refuses to start if it throws.
+ * unit-tested; `runtime.ts` calls it once at startup with `process.env` and
+ * the server refuses to start if it throws.
  */
 
 export interface PasskeyConfig {
@@ -21,6 +21,13 @@ export interface PasskeyConfig {
 	 * `__Host-` prefix; over http://localhost in development they cannot.
 	 */
 	secureCookies: boolean;
+	/** Lower-case request header the client's IP address is read from. */
+	clientIpHeader: string;
+	/**
+	 * For X-Forwarded-For: which entry, counted from the right, is the
+	 * client — the number of reverse proxies in front of the app.
+	 */
+	xffDepth: number;
 }
 
 /** Collects every problem at once, so one restart fixes the whole configuration. */
@@ -40,8 +47,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RP_NAME = "creating space";
 const DEFAULT_DATABASE_PATH = "data/passkeys.sqlite";
 const DEFAULT_SESSION_TTL_DAYS = 30;
-/** `pnpm dev` serves on this port (vite.config.ts), so development works without any setup. */
+/** `next dev` serves on this port by default, so development works without any setup. */
 const DEV_ORIGIN = "http://localhost:3000";
+const DEFAULT_CLIENT_IP_HEADER = "x-forwarded-for";
+/** An HTTP header name: letters, digits and a few symbols, no spaces or colons. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9a-z-]+$/;
 
 /**
  * WebAuthn only runs in a secure context: https everywhere, plain http only
@@ -82,12 +92,11 @@ export const parseConfig = (
 ): PasskeyConfig => {
 	const problems: string[] = [];
 
-	// PASSKEY_ORIGIN wins; adapter-node's ORIGIN is the natural fallback in production.
-	const originList =
-		env.PASSKEY_ORIGIN?.trim() || env.ORIGIN?.trim() || (dev ? DEV_ORIGIN : "");
+	// Next.js cannot tell the public origin behind a proxy, so production must name it.
+	const originList = env.PASSKEY_ORIGIN?.trim() || (dev ? DEV_ORIGIN : "");
 	if (!originList) {
 		problems.push(
-			"Set PASSKEY_ORIGIN (or adapter-node's ORIGIN) to the site's origin, e.g. https://example.com.",
+			"Set PASSKEY_ORIGIN to the site's origin, e.g. https://example.com.",
 		);
 	}
 	const entries = originList
@@ -129,6 +138,22 @@ export const parseConfig = (
 		);
 	}
 
+	const clientIpHeader = (
+		env.PASSKEY_CLIENT_IP_HEADER?.trim() || DEFAULT_CLIENT_IP_HEADER
+	).toLowerCase();
+	if (!HEADER_NAME.test(clientIpHeader)) {
+		problems.push(
+			`PASSKEY_CLIENT_IP_HEADER "${clientIpHeader}" is not a header name.`,
+		);
+	}
+	const depthText = env.PASSKEY_XFF_DEPTH?.trim();
+	const xffDepth = depthText ? Number(depthText) : 1;
+	if (!Number.isInteger(xffDepth) || xffDepth < 1 || xffDepth > 10) {
+		problems.push(
+			`PASSKEY_XFF_DEPTH must be a whole number from 1 to 10, got "${depthText}".`,
+		);
+	}
+
 	if (problems.length > 0) {
 		throw new ConfigError(problems);
 	}
@@ -139,5 +164,7 @@ export const parseConfig = (
 		databasePath: env.DATABASE_PATH?.trim() || DEFAULT_DATABASE_PATH,
 		sessionTtlMs: ttlDays * DAY_MS,
 		secureCookies: urls.every((url) => url.protocol === "https:"),
+		clientIpHeader,
+		xffDepth,
 	};
 };

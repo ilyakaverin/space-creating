@@ -10,18 +10,19 @@ The words **MUST**, **SHOULD** and **MAY** are used as in RFC 2119.
 
 ## 1. Context
 
-- The frontend on `master` already implements the client side of the contract. Setting `PUBLIC_PASSKEY_API_URL` switches it from the in-browser relying party (`localStorage`) to this backend. Going live needs **no frontend code change**; §12 lists optional follow-ups.
+- The frontend already implements the client side of the contract. Setting `NEXT_PUBLIC_PASSKEY_API_URL` switches it from the in-browser relying party (`localStorage`) to this backend. Going live needs **no frontend code change**; §12 lists optional follow-ups.
 - The backend owns everything security-relevant: challenges, attestation and assertion verification, credential storage, accounts and sessions. The frontend only forwards opaque WebAuthn data.
 
 ```
-Browser ── PasskeyLogin.svelte → http-relying-party.ts
+Browser ── PasskeyLogin.tsx → http-relying-party.ts
    │  JSON over HTTPS, same origin, cookies
    ▼
-SvelteKit server (adapter-node)
-   ├─ src/hooks.server.ts             session cookie → event.locals.user
-   ├─ src/routes/api/passkey/**       the seven endpoints (§4)
-   ├─ src/lib/server/webauthn/        @simplewebauthn/server wrappers, policy (§7)
-   └─ src/lib/server/db/              SQLite via better-sqlite3 (§8)
+Next.js server (next start)
+   ├─ src/instrumentation.ts                 starts the backend before the first request
+   ├─ src/app/api/passkey/**/route.ts        the seven endpoints (§4)
+   ├─ src/lib/server/passkey/http.ts         shared wrapper: Origin check, session cookie → user, errors
+   ├─ src/lib/server/passkey/ceremonies.ts   @simplewebauthn/server calls and policy (§7)
+   └─ src/lib/server/passkey/database.ts     SQLite via better-sqlite3 (§8)
 ```
 
 ---
@@ -29,32 +30,33 @@ SvelteKit server (adapter-node)
 ## 2. Technology and Configuration
 
 ### 2.1 Stack
-- **BR-TECH-1** Endpoints are SvelteKit server routes (`+server.ts`) inside this app, under `/api/passkey`. Same origin as the page: no CORS, `SameSite` cookies work, and the RP ID is the site's hostname.
+- **BR-TECH-1** Endpoints are Next.js route handlers (`route.ts`, App Router) inside this app, under `/api/passkey`, on the Node.js runtime. Same origin as the page: no CORS, `SameSite` cookies work, and the RP ID is the site's hostname.
 - **BR-TECH-2** WebAuthn ceremonies use `@simplewebauthn/server`. Its option generators return the WebAuthn Level 3 JSON shapes the frontend parses, and its verifiers accept `PublicKeyCredential.toJSON()` output as sent by the frontend.
 - **BR-TECH-3** Storage is SQLite through `better-sqlite3` (synchronous, transactional, one file). pnpm only runs build scripts for allow-listed packages, so `better-sqlite3` MUST be added to `onlyBuiltDependencies` / `allowBuilds` in `pnpm-workspace.yaml`, or its native module is never compiled.
-- **BR-TECH-4** Server-only code lives under `src/lib/server/`, which SvelteKit refuses to bundle into client code.
+- **BR-TECH-4** Server-only code lives under `src/lib/server/`; its entry points import `server-only`, so the build fails if client code imports them. `better-sqlite3` is a native addon and stays out of the bundle (`serverExternalPackages`).
 - **BR-TECH-5** No auth framework and no JWTs: a session is a database row plus an opaque cookie (§6).
-- **BR-TECH-6** Unit tests use Vitest (Vite-native); end-to-end tests use Playwright with a virtual authenticator (§14).
+- **BR-TECH-6** Unit tests use Vitest; end-to-end tests use Playwright with a virtual authenticator (§14).
 
 ### 2.2 Configuration
 
 | Variable | Kind | Example | Default | Purpose |
 |---|---|---|---|---|
-| `PUBLIC_PASSKEY_API_URL` | public, runtime | `/api/passkey` | unset → local mode | Switches the frontend to a backend; the built-in one starts only when this is `/api/passkey` (BR-CONF-6) |
-| `PUBLIC_PASSKEY_RP_ID` | public, runtime | `example.com` | page hostname | Only when the RP ID is not the page's hostname; used by the frontend for Signal API calls |
-| `PASSKEY_ORIGIN` | private | `https://example.com` | `ORIGIN`; `http://localhost:3000` under `pnpm dev` | Expected WebAuthn origin(s) and allowed `Origin` header; comma-separated for several |
+| `NEXT_PUBLIC_PASSKEY_API_URL` | public, build time | `/api/passkey` | unset → local mode | Switches the frontend to a backend; the built-in one starts only when this is `/api/passkey` (BR-CONF-6) |
+| `NEXT_PUBLIC_PASSKEY_RP_ID` | public, build time | `example.com` | page hostname | Only when the RP ID is not the page's hostname; used by the frontend for Signal API calls |
+| `PASSKEY_ORIGIN` | private | `https://example.com` | required in production; `http://localhost:3000` under `pnpm dev` | Expected WebAuthn origin(s) and allowed `Origin` header; comma-separated for several |
 | `PASSKEY_RP_ID` | private | `example.com` | hostname of `PASSKEY_ORIGIN` | Relying party ID |
 | `PASSKEY_RP_NAME` | private | `creating space` | `creating space` | Shown by some authenticators |
 | `DATABASE_PATH` | private | `data/passkeys.sqlite` | `data/passkeys.sqlite` | SQLite file |
 | `SESSION_TTL_DAYS` | private | `30` | `30` | Session lifetime |
-| `ORIGIN`, `PROTOCOL_HEADER`, `HOST_HEADER`, `ADDRESS_HEADER` | adapter-node | | | Correct request URL and client IP behind a proxy (§10) |
+| `PASSKEY_CLIENT_IP_HEADER` | private | `x-real-ip` | `x-forwarded-for` | Request header the client IP is read from, for rate limits and logs (BR-SEC-5) |
+| `PASSKEY_XFF_DEPTH` | private | `2` | `1` | With `X-Forwarded-For`: the entry counted from the right that holds the client, i.e. the number of proxies |
 
-- **BR-CONF-1** Private settings are read through `$env/dynamic/private` and validated once at startup. A missing or invalid value MUST stop the server with a clear message, not fail at the first request.
+- **BR-CONF-1** Private settings are read from `process.env` (Next.js loads `.env`) and validated once at startup, in `register()` of `src/instrumentation.ts`. A missing or invalid value MUST stop the server with a clear message, not fail at the first request.
 - **BR-CONF-2** `PASSKEY_RP_ID` MUST equal the hostname of every `PASSKEY_ORIGIN` or be a registrable parent of it; this is checked at startup (FR-SEC-2).
 - **BR-CONF-3** Every environment (dev, staging, prod) has its own RP ID and database. Passkeys registered for one RP ID never work on another; this is expected, not a bug.
 - **BR-CONF-4** Development uses `PASSKEY_ORIGIN=http://localhost:3000` (`pnpm dev`, also the default in development) or the port actually served. The LAN address printed by `pnpm dev` is not a secure context and cannot be used.
 - **BR-CONF-5** Local settings go in `.env` (gitignored); a committed `.env.example` lists every variable with safe defaults. `data/` is gitignored.
-- **BR-CONF-6** The built-in backend starts only when `PUBLIC_PASSKEY_API_URL` is `/api/passkey`. Otherwise the frontend runs in local mode, the server needs no passkey configuration or database, and `/api/passkey/*` answers `404 not_found`. When the variable is set to anything else, the server logs once that the built-in backend is off.
+- **BR-CONF-6** The built-in backend starts only when `NEXT_PUBLIC_PASSKEY_API_URL` is `/api/passkey`. Next.js writes `NEXT_PUBLIC_` values into server and browser code at build time, so both always agree on the mode and changing it needs a rebuild. Otherwise the frontend runs in local mode, the server needs no passkey configuration or database, and `/api/passkey/*` answers `404 not_found`. When the variable is set to anything else, the server logs once that the built-in backend is off.
 
 ---
 
@@ -65,7 +67,7 @@ SvelteKit server (adapter-node)
 - **BR-GEN-3** Responses are JSON (`Content-Type: application/json`) except `204 No Content`. Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 - **BR-GEN-4** Binary values travel as unpadded base64url strings (RFC 4648 §5), never plain base64 (FR-ENC-1). A value that is not valid base64url → `400 invalid_request`.
 - **BR-GEN-5** The user object is `{ "id": string, "name": string, "displayName": string }`, where `id` is the WebAuthn **user handle** in base64url — never a database row number. The frontend passes it to `PublicKeyCredential.signalAllAcceptedCredentials()`, which only works with the real handle.
-- **BR-GEN-6** Undocumented methods on a documented path → `405` with an `Allow` header (SvelteKit's default for missing handlers).
+- **BR-GEN-6** Undocumented methods on a documented path → `405` (Next.js's default for methods a route does not export). Next.js also answers `HEAD` with the `GET` handler and `OPTIONS` with `204` and an `Allow` header — without any CORS headers.
 - **BR-GEN-7** Success bodies contain at least the fields in §4. Extra fields are allowed and ignored by the frontend.
 
 ### 3.1 Errors (FR-API-5)
@@ -204,11 +206,11 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 
 ### 6.1 Session cookie
 - **BR-COOK-1** Name `__Host-passkey-session` in production. Over `http://localhost` in development the name is `passkey-session` without `Secure`, because not every browser accepts `Secure` cookies on plain http. Cookies are not separated by port, so the name is specific enough not to clash with other apps on localhost.
-- **BR-COOK-2** Attributes: `HttpOnly`, `Secure` (production), `SameSite=Lax`, `Path=/`, `Max-Age` = the session TTL. No `Domain`.
+- **BR-COOK-2** Attributes: `HttpOnly`, `Secure` (production), `SameSite=Lax`, `Path=/`, `Expires` = the session's expiry. No `Domain`.
 - **BR-COOK-3** Value: 32 random bytes, base64url. The database stores only the SHA-256 of the token, so a database leak does not expose usable sessions.
 - **BR-COOK-4** Rotation: every successful registration or authentication creates a new session and deletes the one the request carried (prevents session fixation).
 - **BR-COOK-5** Lifetime `SESSION_TTL_DAYS` (default 30). Sliding: when less than half remains, the expiry is extended and the cookie re-sent.
-- **BR-COOK-6** `hooks.server.ts` resolves the cookie on every request into `event.locals.user` (or `null`), deleting expired rows it meets. Endpoints read the user only from `locals`.
+- **BR-COOK-6** The endpoint wrapper (`http.ts`) resolves the cookie on every API request into the request context's `user` (or `null`), clearing a cookie whose session is unknown or expired. Endpoints read the user only from that context.
 - **BR-COOK-7** Sessions record created, expiry and last-seen times (last-seen updated at most once per hour) and MAY record the user agent for a future "signed-in devices" list.
 - **BR-COOK-8** Tokens never appear in response bodies, URLs or logs. The frontend stores no secret anywhere.
 
@@ -300,9 +302,9 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 
 - **BR-SEC-1** Production is HTTPS only (TLS at the proxy) with HSTS. Development uses `localhost` only (FR-SEC-1).
 - **BR-SEC-2** Every POST and DELETE MUST carry an `Origin` header equal to one of `PASSKEY_ORIGIN`, otherwise → `403 forbidden_origin`. Browsers send `Origin` on all non-GET fetches, including same-origin ones.
-- **BR-SEC-3** CSRF (FR-SEC-6): state changes need JSON POST or DELETE, which a cross-site page cannot send without a CORS preflight; the backend answers no preflight, `SameSite` cookies are not sent cross-site, and BR-SEC-2 checks the origin anyway. SvelteKit's built-in origin check still covers form posts.
+- **BR-SEC-3** CSRF (FR-SEC-6): state changes need JSON POST or DELETE, which a cross-site page cannot send without a CORS preflight; the backend answers no preflight, `SameSite` cookies are not sent cross-site, and BR-SEC-2 checks the origin anyway. The app has no form actions or Server Actions, so no other endpoint accepts form posts.
 - **BR-SEC-4** No CORS headers while the API is same-origin. If the API is ever split off: an exact origin allow-list, `Access-Control-Allow-Credentials: true`, methods `GET, POST, DELETE`, header `Content-Type` — never `*`.
-- **BR-SEC-5** Rate limits per client IP (in memory, fine for one process): options endpoints 30/min, verify endpoints 10/min. There is deliberately no per-username limit: anyone could use it up for someone else's name and stop them from adding a passkey. Excess → `429 rate_limited` with `Retry-After`. Behind a proxy the IP comes from `ADDRESS_HEADER` (§10).
+- **BR-SEC-5** Rate limits per client IP (in memory, fine for one process): options endpoints 30/min, verify endpoints 10/min. There is deliberately no per-username limit: anyone could use it up for someone else's name and stop them from adding a passkey. Excess → `429 rate_limited` with `Retry-After`. A route handler cannot see the connection, so the IP comes from a header (BR-OPS-4).
 - **BR-SEC-6** Account enumeration: only `/registration/options` reveals whether a name exists (inherent to FR-ERR-2), and probing is bounded by its per-IP limit; `/authentication/options` is never user-specific.
 - **BR-SEC-7** The server never sees private keys (FR-SEC-4); session tokens are stored only as hashes; no secret is ever returned in a body.
 - **BR-SEC-8** Security events are logged as structured JSON with request ID, user handle, credential ID, IP and user agent: registration, sign-in success and failure (with the failed check), `counter_regression`, `unknown_credential`, sign-out, account deletion, rate limiting. Cookies, tokens, challenges and full credential payloads are never logged.
@@ -316,9 +318,9 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 - **BR-OPS-1** Startup order: validate configuration, open the database, run migrations, then accept requests. Any failure stops the process.
 - **BR-OPS-2** Expired challenges (after BR-CH-8's retention) and sessions are deleted at startup and every 10 minutes. A failure during the periodic run is logged and retried at the next run; it must never stop the server.
 - **BR-OPS-3** The SQLite file is backed up with the online backup API or `VACUUM INTO`, never by copying the live file. Losing it orphans every passkey.
-- **BR-OPS-4** Behind a reverse proxy, adapter-node's `ORIGIN` (or `PROTOCOL_HEADER` + `HOST_HEADER`) and `ADDRESS_HEADER` are set, so origin checks and rate limits see real values.
+- **BR-OPS-4** Production runs behind a reverse proxy that appends the client address to `X-Forwarded-For`. Next.js fills that header from the connection only when a request has none, so without a proxy a client can choose its own rate-limit key. With several proxies `PASSKEY_XFF_DEPTH` is their number; a proxy that sets another header (e.g. `X-Real-IP`) is used through `PASSKEY_CLIENT_IP_HEADER`. Origin checks do not depend on the proxy: they compare against `PASSKEY_ORIGIN`.
 - **BR-OPS-5** One server process is assumed (SQLite, in-memory rate limits). Scaling out needs a shared rate-limit store and a server database — out of scope.
-- **BR-OPS-6** The service worker only caches page navigations, so `/api/*` responses are never served from a cache. This MUST stay true.
+- **BR-OPS-6** The service worker (`public/service-worker.js`) only caches page navigations, `/_next/static/*` and `/favicon/*`; it skips `/api/*` entirely, so API responses are never served from a cache. This MUST stay true.
 - **BR-OPS-7** MAY expose `GET /api/health` returning `200 { "ok": true, "passkeyBackend": "on" | "off" }` after a trivial database query.
 
 ---
@@ -327,7 +329,7 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 
 What the merged frontend relies on; each item is also a requirement above.
 
-- `PUBLIC_PASSKEY_API_URL=/api/passkey` is set at runtime (no rebuild needed).
+- `NEXT_PUBLIC_PASSKEY_API_URL=/api/passkey` is set when building (it is written into the code).
 - Requests use `credentials: "include"` and `cache: "no-store"`; POSTs send JSON; GET and DELETE send no body.
 - Verify endpoints and `GET /session` wrap the user as `{ "user": … }`; `GET /session` is always `200` (BR-SES-1).
 - DELETE endpoints answer exactly `204` (BR-SES-5).
@@ -335,7 +337,7 @@ What the merged frontend relies on; each item is also a requirement above.
 - `user.id` is the WebAuthn user handle (BR-GEN-5); `unknown_credential` triggers the Signal API (BR-ERR-3).
 - "Add a passkey" sends `{ "userName": <account name> }` while signed in (BR-REGO-5).
 - Authentication options are requested often and abandoned often (BR-AUTHO-3, BR-CH-7).
-- `PUBLIC_PASSKEY_RP_ID` is only needed when the RP ID is not the page's hostname.
+- `NEXT_PUBLIC_PASSKEY_RP_ID` is only needed when the RP ID is not the page's hostname.
 
 ---
 
@@ -343,7 +345,7 @@ What the merged frontend relies on; each item is also a requirement above.
 
 - Map `rate_limited`, `invalid_request` and `forbidden_origin` to specific messages, and give `invalid_username` a text that also fits "too long".
 - Restart the autofill request shortly before its challenge expires; today a user who returns to an old tab gets "The request expired" once.
-- Render the signed-in state during SSR from `locals.user` (see `passkey-ssr-implementation.md`) instead of after hydration.
+- Render the signed-in state on the server (a Server Component reading the session cookie) instead of after hydration.
 - Passkey management UI once the §13 endpoints exist.
 
 ---
@@ -361,7 +363,7 @@ What the merged frontend relies on; each item is also a requirement above.
 ## 14. Testing
 
 - **BR-TEST-1** Unit tests (Vitest) cover: username and display-name validation; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, rotation, sliding expiry and expiry cleanup; error-to-status mapping; counter logic; the user-handle check.
-- **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && node build` with a temporary database and `PUBLIC_PASSKEY_API_URL=/api/passkey`, and cover every flow in FR-TEST-4:
+- **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` with a temporary database and `NEXT_PUBLIC_PASSKEY_API_URL=/api/passkey`, and cover every flow in FR-TEST-4:
   - register, reload (still signed in), sign out, sign in with the button;
   - repeat registration on the same device while signed in → `InvalidStateError` message, no duplicate stored;
   - taken username → message before any prompt, authenticator untouched;

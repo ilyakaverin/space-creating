@@ -27,18 +27,20 @@ export default defineConfig({
 		serviceWorkers: "block",
 	},
 	webServer: {
-		command: "pnpm build && node build",
+		// NEXT_PUBLIC_ variables are fixed at build time, so the tests build their own.
+		command: "pnpm build && pnpm start",
 		url: `${BASE_URL}/api/health`,
 		reuseExistingServer: false,
-		timeout: 180_000,
+		timeout: 300_000,
 		env: {
 			PORT: String(PORT),
-			ORIGIN: BASE_URL,
-			PUBLIC_PASSKEY_API_URL: "/api/passkey",
+			PASSKEY_ORIGIN: BASE_URL,
+			NEXT_PUBLIC_PASSKEY_API_URL: "/api/passkey",
 			DATABASE_PATH: process.env.E2E_DATABASE_PATH,
 			// Each test sends its own "client address" in this header, so the
 			// per-IP rate limits of one test never affect another.
-			ADDRESS_HEADER: "x-test-client-ip",
+			PASSKEY_CLIENT_IP_HEADER: "x-test-client-ip",
+			NEXT_TELEMETRY_DISABLED: "1",
 		},
 	},
 });

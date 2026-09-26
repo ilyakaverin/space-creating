@@ -8,7 +8,7 @@
  * Functions here take the backend (config + stores), the request context
  * built by the route, and the untrusted JSON body. They return plain data:
  * cookies and HTTP responses are the route's job, so this file knows
- * nothing about SvelteKit.
+ * nothing about Next.js.
  */
 import {
 	type PublicKeyCredentialCreationOptionsJSON,
@@ -43,15 +43,15 @@ import {
 
 /** What a route knows about the request, independent of HTTP details. */
 export interface RequestContext {
-	/** The signed-in user, resolved from the session cookie by hooks.server.ts. */
+	/** The signed-in user, resolved from the session cookie by `http.ts`. */
 	user: User | null;
 	sessionTokenHash: string | null;
 	/** From the flow cookie that ties challenges to this browser; null if absent. */
 	flowId: string | null;
 	/**
-	 * The client's IP address. A function because adapter-node throws when
-	 * ADDRESS_HEADER is configured but missing from a request; only the
-	 * rate-limited ceremonies need it, so the other endpoints keep working.
+	 * The client's IP address. A function because it throws when the
+	 * configured header is missing from a request; only the rate-limited
+	 * ceremonies need it, so the other endpoints keep working.
 	 */
 	clientAddress(): string;
 	userAgent: string | null;

@@ -13,9 +13,16 @@
  * running on localhost.
  */
 import { randomBytes } from "node:crypto";
-import type { Cookies } from "@sveltejs/kit";
+import type { cookies } from "next/headers";
+import "server-only";
 import type { PasskeyConfig } from "./config";
 import type { NewSession } from "./sessions";
+
+/**
+ * What `await cookies()` returns inside a route handler: it reads the
+ * request's cookies, and Next.js adds whatever is set on it to the response.
+ */
+export type CookieStore = Awaited<ReturnType<typeof cookies>>;
 
 /** 16 random bytes in base64url. */
 const FLOW_ID_FORMAT = /^[A-Za-z0-9_-]{22}$/;
@@ -40,12 +47,12 @@ const sessionAttributes = (config: PasskeyConfig) =>
 	}) as const;
 
 export const readSessionToken = (
-	cookies: Cookies,
+	cookies: CookieStore,
 	config: PasskeyConfig,
-): string | null => cookies.get(names(config).session) ?? null;
+): string | null => cookies.get(names(config).session)?.value ?? null;
 
 export const setSessionCookie = (
-	cookies: Cookies,
+	cookies: CookieStore,
 	config: PasskeyConfig,
 	session: NewSession,
 ): void => {
@@ -55,18 +62,22 @@ export const setSessionCookie = (
 	});
 };
 
+/** Same attributes as when set: browsers ignore a `__Host-` deletion without `Secure`. */
 export const clearSessionCookie = (
-	cookies: Cookies,
+	cookies: CookieStore,
 	config: PasskeyConfig,
 ): void => {
-	cookies.delete(names(config).session, sessionAttributes(config));
+	cookies.delete({ name: names(config).session, ...sessionAttributes(config) });
 };
 
 /**
  * For the options endpoints: reuses this browser's flow ID or starts one, and
  * renews the cookie's lifetime.
  */
-export const useFlowId = (cookies: Cookies, config: PasskeyConfig): string => {
+export const ensureFlowId = (
+	cookies: CookieStore,
+	config: PasskeyConfig,
+): string => {
 	const existing = readFlowId(cookies, config);
 	const flowId = existing ?? randomBytes(16).toString("base64url");
 	cookies.set(names(config).flow, flowId, {
@@ -82,9 +93,9 @@ export const useFlowId = (cookies: Cookies, config: PasskeyConfig): string => {
 
 /** For the verify endpoints: never creates one — no flow cookie, no challenge to redeem. */
 export const readFlowId = (
-	cookies: Cookies,
+	cookies: CookieStore,
 	config: PasskeyConfig,
 ): string | null => {
-	const value = cookies.get(names(config).flow);
+	const value = cookies.get(names(config).flow)?.value;
 	return value && FLOW_ID_FORMAT.test(value) ? value : null;
 };

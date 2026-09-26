@@ -1,0 +1,16 @@
+:root {
+	--light: oklch(96.37% 0.002 247.84);
+	--dark-card: oklch(24.78% 0 0);
+	--bg-white: oklch(100% 0 0);
+	--black: oklch(0% 0 0);
+	--red: oklch(45.94% 0.18851981563594328 29.233885192342644);
+	--orange: oklch(79.8% 0.17066545879847597 72.2265497393004);
+	--white: oklch(100% 0 0);
+	--blue: oklch(33.07% 0.22914606351295777 264.05202063805507);
+	--gray: oklch(73.16% 0 0);
+}
+body {
+	/* --font-bios is set on <html> by next/font in layout.tsx. */
+	font-family: var(--font-bios), monospace, sans-serif;
+	background-color: var(--black);
+}
