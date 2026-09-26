@@ -1,0 +1,39 @@
+/*
+ * A plain stylesheet rather than a CSS module, so the class names stay as
+ * written: the end-to-end tests select `section.passkey` and `p.message`.
+ * Every rule is scoped under .passkey instead.
+ */
+.passkey,
+.passkey form {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 0.75rem;
+}
+
+.passkey {
+	margin-block-start: 1.5rem;
+	max-width: 40ch;
+	text-align: center;
+}
+
+.passkey label {
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+	color: var(--gray);
+	font-size: 0.875rem;
+}
+
+.passkey .message {
+	color: var(--gray);
+	font-size: 0.875rem;
+	line-height: 1.4;
+	margin: 0;
+	min-height: 1.4em;
+	text-wrap: balance;
+}
+
+.passkey .error {
+	color: var(--orange);
+}

@@ -5,15 +5,14 @@
   "browserslist": "> 0.5%, last 2 versions, not dead",
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "start": "node build",
-    "format": "biome format --write ./src",
-    "preview": "vite preview",
-    "prepare": "svelte-kit sync",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-    "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "lint": "biome check ./src",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "check": "next typegen && tsc --noEmit",
+    "lint": "biome check ./src ./tests ./public/service-worker.js ./next.config.ts ./playwright.config.ts ./vitest.config.ts",
+    "format": "biome format --write ./src ./tests ./public/service-worker.js ./next.config.ts ./playwright.config.ts ./vitest.config.ts",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
     "preinstall": "npx only-allow pnpm"
   },
   "repository": {
@@ -28,12 +27,20 @@
   "homepage": "https://github.com/ilyakaverin/space-creating#readme",
   "devDependencies": {
     "@biomejs/biome": "1.9.4",
-    "@sveltejs/adapter-node": "^5.5.7",
-    "@sveltejs/kit": "^2.70.3",
-    "@sveltejs/vite-plugin-svelte": "4.0.4",
-    "svelte": "^5.34.1",
-    "svelte-check": "^4.7.6",
+    "@playwright/test": "1.56.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "typescript": "^5.3.3",
-    "vite": "^5.4.19"
+    "vitest": "^3.2.7"
+  },
+  "dependencies": {
+    "@simplewebauthn/server": "^14.0.3",
+    "better-sqlite3": "^13.0.3",
+    "next": "^16.3.6",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "server-only": "^0.0.1"
   }
 }

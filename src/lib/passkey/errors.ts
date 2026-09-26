@@ -1,5 +1,3 @@
-import { dev } from "$app/environment";
-
 /**
  * Error codes a relying party reports. A backend answers a failed request with
  * `{ "code": "...", "message": "..." }`; the message is for developers, the UI
@@ -44,10 +42,15 @@ const RELYING_PARTY_MESSAGES = new Map<string, string>([
 	["network_error", "Couldn't reach the server. Check your connection."],
 ] satisfies [PasskeyErrorCode, string][]);
 
-/** Raw error names and messages are for developers only. */
+/**
+ * Raw error names and messages are for developers only. A warning, not an
+ * error: these failures are expected (a cancelled prompt, a replaced autofill
+ * request) and the UI already explains them, while Next.js's development
+ * overlay reports every console.error as a bug in the app.
+ */
 export const logError = (cause: unknown, ceremony: Ceremony): void => {
-	if (dev) {
-		console.error(`[passkey:${ceremony}]`, cause);
+	if (process.env.NODE_ENV === "development") {
+		console.warn(`[passkey:${ceremony}]`, cause);
 	}
 };
 

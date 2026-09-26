@@ -1,7 +1,3 @@
-@font-face {
-	font-family: "Source Code Pro";
-	src: url("./assets/Fonts/WebPlus_IBM_BIOS.woff") format("woff");
-}
 :root {
 	--light: oklch(96.37% 0.002 247.84);
 	--dark-card: oklch(24.78% 0 0);
@@ -14,6 +10,7 @@
 	--gray: oklch(73.16% 0 0);
 }
 body {
-	font-family: "Source Code Pro", monospace, sans-serif;
+	/* --font-bios is set on <html> by next/font in layout.tsx. */
+	font-family: var(--font-bios), monospace, sans-serif;
 	background-color: var(--black);
 }
