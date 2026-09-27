@@ -9,10 +9,13 @@ lerna-debug.log*
 
 node_modules
 dist
-dist-ssr
-.svelte-kit
-build
 *.local
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
 
 # Editor directories and files
 .vscode/*
@@ -24,3 +27,11 @@ build
 *.njsproj
 *.sln
 *.sw?
+
+# Passkey backend: local settings and the SQLite database
+.env
+data/
+
+# Playwright
+test-results/
+playwright-report/

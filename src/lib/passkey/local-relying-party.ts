@@ -4,7 +4,7 @@
  * sessionStorage, and assertions are verified with WebCrypto. It shows the
  * passkey ceremonies without a server, but it is not an authentication
  * boundary — anyone with devtools can edit the stored accounts or the session.
- * Set PUBLIC_PASSKEY_API_URL to use a backend instead.
+ * Set NEXT_PUBLIC_PASSKEY_API_URL to use a backend instead.
  */
 import { fromBase64Url, randomBase64Url } from "./encoding";
 import { PasskeyError } from "./errors";
