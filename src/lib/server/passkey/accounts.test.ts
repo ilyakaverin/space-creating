@@ -37,6 +37,16 @@ beforeEach(async () => {
 });
 
 describe("account store", () => {
+	it("finds a user by name regardless of case, and refuses a second one", async () => {
+		expect((await accounts.findUserByName("traveller 7k3qx2"))?.id).toBe("u1");
+		expect(await accounts.findUserByName("someone else")).toBeNull();
+		expect(
+			await codeOf(() =>
+				accounts.createUser({ id: "u2", name: "TRAVELLER 7K3QX2" }),
+			),
+		).toBe("username_taken");
+	});
+
 	it("finds a user by handle", async () => {
 		expect(await accounts.findUser("u1")).toEqual({
 			id: "u1",

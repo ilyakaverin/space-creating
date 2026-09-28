@@ -37,7 +37,7 @@ export interface Db extends Sql {
  * Schema versions, applied in order and recorded in `schema_migrations`.
  * Never edit a migration that has run somewhere; append a new one instead.
  */
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: readonly string[] = [
 	`
 	-- One row per account. The primary key is the WebAuthn user handle
 	-- (base64url): random bytes the authenticator stores with the passkey and
@@ -115,6 +115,19 @@ const MIGRATIONS: string[] = [
 		reset_at timestamptz NOT NULL
 	);
 	CREATE INDEX rate_limits_reset_at ON rate_limits (reset_at);
+	`,
+	`
+	-- Usernames, typed at registration and unique regardless of case.
+	-- name_key is the comparison form (NFC, lower case), computed by the app.
+	ALTER TABLE users ADD COLUMN name_key text;
+	-- Accounts from before usernames have generated names ("Traveller 7K3QX2").
+	UPDATE users SET name_key = lower(name);
+	-- Two equal generated names are all but impossible, but must not make
+	-- the migration fail: a later duplicate gets its handle appended.
+	UPDATE users u SET name_key = u.name_key || ' ' || u.id
+	WHERE EXISTS (SELECT 1 FROM users o WHERE o.name_key = u.name_key AND o.id < u.id);
+	ALTER TABLE users ALTER COLUMN name_key SET NOT NULL;
+	ALTER TABLE users ADD CONSTRAINT users_name_key_unique UNIQUE (name_key);
 	`,
 ];
 

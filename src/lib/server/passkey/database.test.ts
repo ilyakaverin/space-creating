@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { type Db, type Sql, migrate, migrateOnFirstUse } from "./database";
-import { createTestDatabase } from "./test-database";
+import {
+	type Db,
+	MIGRATIONS,
+	type Sql,
+	migrate,
+	migrateOnFirstUse,
+} from "./database";
+import { createEmptyTestDatabase, createTestDatabase } from "./test-database";
 
 describe("migrations", () => {
 	it("apply once, and do nothing when run again", async () => {
@@ -9,7 +15,38 @@ describe("migrations", () => {
 		const { rows } = await db.query<{ version: number }>(
 			"SELECT version FROM schema_migrations ORDER BY version",
 		);
-		expect(rows).toEqual([{ version: 1 }]);
+		expect(rows).toEqual([{ version: 1 }, { version: 2 }]);
+	});
+
+	it("give accounts from before usernames a unique name key", async () => {
+		const db = createEmptyTestDatabase();
+		// The state a database was in after the first release: version 1.
+		await db.query(MIGRATIONS[0]);
+		await db.query(
+			"CREATE TABLE schema_migrations (version integer PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())",
+		);
+		await db.query("INSERT INTO schema_migrations (version) VALUES ($1)", [1]);
+		const now = new Date();
+		for (const [id, name] of [
+			["u1", "Traveller 7K3QX2"],
+			["u2", "Traveller 7k3qx2"],
+			["u3", "Traveller AAAAAA"],
+		]) {
+			await db.query(
+				"INSERT INTO users (id, name, created_at) VALUES ($1, $2, $3)",
+				[id, name, now],
+			);
+		}
+		await migrate(db);
+		const { rows } = await db.query<{ id: string; name_key: string }>(
+			"SELECT id, name_key FROM users ORDER BY id",
+		);
+		expect(rows).toEqual([
+			{ id: "u1", name_key: "traveller 7k3qx2" },
+			{ id: "u2", name_key: "traveller 7k3qx2 u2" },
+			{ id: "u3", name_key: "traveller aaaaaa" },
+		]);
+		await db.close();
 	});
 
 	it("refuse a database migrated by newer code", async () => {
@@ -21,8 +58,8 @@ describe("migrations", () => {
 });
 
 /**
- * Records what reaches the database. Every query answers "schema version 1",
- * so a migration finds nothing to do; `failNext` makes the next transaction
+ * Records what reaches the database. Every query answers with the latest
+ * schema version, so a migration finds nothing to do; `failNext` makes the next transaction
  * fail as if the database were unreachable.
  */
 const recordingDb = () => {
@@ -31,7 +68,7 @@ const recordingDb = () => {
 	const sql: Sql = {
 		async query<Row>(text: string) {
 			calls.push(text.trim().split(/\s+/)[0]);
-			return { rows: [{ version: 1 }] as Row[], rowCount: 0 };
+			return { rows: [{ version: MIGRATIONS.length }] as Row[], rowCount: 0 };
 		},
 	};
 	const db: Db = {

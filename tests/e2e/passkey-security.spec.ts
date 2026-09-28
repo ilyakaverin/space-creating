@@ -6,12 +6,12 @@
 import { request } from "@playwright/test";
 import { BASE_URL } from "../../playwright.config";
 import {
-	GENERATED_NAME,
 	SESSION_COOKIE,
 	apiClient,
 	expect,
 	openApp,
 	test,
+	uniqueName,
 } from "./fixtures";
 
 const VERIFY = "/authentication/verify";
@@ -151,18 +151,29 @@ test("requests that did not come from the page are refused", async () => {
 	await client.dispose();
 });
 
-test("registration ignores any name the client sends", async () => {
+test("registration options name the account as typed, with a random handle", async () => {
 	const client = await apiClient();
-	const response = await client.post("/api/passkey/registration/options", {
-		headers: { origin: BASE_URL, "content-type": "application/json" },
-		data: { userName: "alice", displayName: "Alice" },
-	});
+	const post = (data: unknown) =>
+		client.post("/api/passkey/registration/options", {
+			headers: { origin: BASE_URL, "content-type": "application/json" },
+			data,
+		});
+	const name = uniqueName();
+
+	const response = await post({ userName: ` ${name} ` });
 	expect(response.status()).toBe(200);
-	const { user } = await response.json();
-	expect(user.name).toMatch(GENERATED_NAME);
-	expect(user.displayName).toBe(user.name);
+	const { user, excludeCredentials } = await response.json();
+	expect(user.name).toBe(name);
+	expect(user.displayName).toBe(name);
 	// 32 random bytes: the user handle says nothing about the person.
 	expect(Buffer.from(user.id, "base64url")).toHaveLength(32);
+	expect(excludeCredentials).toEqual([]);
+
+	for (const data of [{}, { userName: "" }, { userName: "x".repeat(65) }]) {
+		const invalid = await post(data);
+		expect(invalid.status()).toBe(400);
+		expect((await invalid.json()).code).toBe("invalid_username");
+	}
 	await client.dispose();
 });
 

@@ -1,6 +1,6 @@
 /**
- * Input validation — docs/passkey-backend-requirements.md BR-GEN-4, BR-REGV-1,
- * BR-AUTHV-1.
+ * Input validation — docs/passkey-backend-requirements.md BR-GEN-4, BR-REGO-1…2,
+ * BR-REGV-1, BR-AUTHV-1.
  *
  * Everything from the network is `unknown` until it passes through here.
  * Validation runs before any database lookup or crypto, and only the fields
@@ -13,6 +13,9 @@ import type {
 import { isoBase64URL } from "@simplewebauthn/server/helpers";
 import { ApiError } from "./errors";
 
+/** Authenticators may cut `user.name` beyond 64 bytes. */
+const MAX_NAME_BYTES = 64;
+const CONTROL_CHARACTER = /\p{Cc}/u;
 /** Unpadded base64url (RFC 4648 §5): the only binary encoding the API accepts. */
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const KNOWN_TRANSPORTS = new Set([
@@ -28,6 +31,43 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
 
 const invalid = (message: string) => new ApiError("invalid_request", message);
+
+const byteLength = (value: string): number =>
+	new TextEncoder().encode(value).length;
+
+/** The form names are compared in: NFC so é is one code point either way, then lower case. */
+export const nameKey = (name: string): string =>
+	name.normalize("NFC").toLowerCase();
+
+export interface UserName {
+	/** As typed (trimmed, NFC) — stored and shown. */
+	name: string;
+	/** Comparison form, unique across accounts. */
+	key: string;
+}
+
+export const parseUserName = (value: unknown): UserName => {
+	if (typeof value !== "string") {
+		throw new ApiError("invalid_username", "userName must be a string.");
+	}
+	const name = value.normalize("NFC").trim();
+	if (!name) {
+		throw new ApiError("invalid_username", "userName is empty.");
+	}
+	if (byteLength(name) > MAX_NAME_BYTES) {
+		throw new ApiError(
+			"invalid_username",
+			`userName is longer than ${MAX_NAME_BYTES} UTF-8 bytes.`,
+		);
+	}
+	if (CONTROL_CHARACTER.test(name)) {
+		throw new ApiError(
+			"invalid_username",
+			"userName contains control characters.",
+		);
+	}
+	return { name, key: nameKey(name) };
+};
 
 const base64Url = (value: unknown, field: string): string => {
 	if (typeof value !== "string" || !BASE64URL.test(value)) {

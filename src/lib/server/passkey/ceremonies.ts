@@ -33,8 +33,10 @@ import type { NewSession } from "./sessions";
 import {
 	type ClientData,
 	decodeClientData,
+	isRecord,
 	parseAuthenticationResponse,
 	parseRegistrationResponse,
+	parseUserName,
 } from "./validation";
 
 /** What a route knows about the request, independent of HTTP details. */
@@ -97,19 +99,6 @@ const MAX_CREDENTIAL_ID_BYTES = 1023;
 
 const randomBytes32 = () => crypto.getRandomValues(new Uint8Array(32));
 
-/** Crockford's base32 alphabet: no I, L, O or U to misread. 256 is a multiple of 32, so unbiased. */
-const NAME_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/**
- * Sign-up asks for no name, but WebAuthn needs one for the passkey: it is
- * what the passkey picker lists. A random one such as "Traveller 7K3QX2"
- * tells two accounts on one device apart. It need not be unique.
- */
-export const generateUserName = (): string => {
-	const bytes = crypto.getRandomValues(new Uint8Array(6));
-	return `Traveller ${Array.from(bytes, (byte) => NAME_ALPHABET[byte % 32]).join("")}`;
-};
-
 const verificationFailed = (reason: unknown) =>
 	new ApiError(
 		"verification_failed",
@@ -136,21 +125,34 @@ const rejectCrossOrigin = (clientData: ClientData): void => {
 
 /**
  * POST /registration/options (BR-REGO). Every registration creates a new
- * account: its user handle and name are generated here and only kept with
- * the challenge until the passkey is verified (BR-REGO-4).
+ * account under the username typed; the account only exists with the
+ * challenge until the passkey is verified (BR-REGO-4).
+ *
+ * A username has one account, and an account one passkey — there is no
+ * "add a passkey" — so a device can never get a second passkey for the
+ * same account.
  */
 export const startRegistration = async (
-	{ challenges, config, limiter }: PasskeyBackend,
+	{ accounts, challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
+	body: unknown,
 ): Promise<PublicKeyCredentialCreationOptionsJSON> => {
 	await limiter.consume(
 		`options:${context.clientAddress()}`,
 		RATE_LIMITS.options,
 	);
+	if (!isRecord(body)) {
+		throw new ApiError("invalid_request", "Expected { userName }.");
+	}
+	const { name } = parseUserName(body.userName);
+	// Refused now, before any authenticator prompt opens (BR-REGO-3).
+	if (await accounts.findUserByName(name)) {
+		throw new ApiError("username_taken", `${name} is already registered.`);
+	}
 	const user: User = {
-		// The user handle is random: it must not identify the person (BR-REGO-6).
+		// The user handle is random, never derived from the name (BR-REGO-6).
 		id: isoBase64URL.fromBuffer(randomBytes32()),
-		name: generateUserName(),
+		name,
 	};
 
 	const options = await generateRegistrationOptions({

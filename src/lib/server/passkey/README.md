@@ -14,13 +14,13 @@ Plain TypeScript, no Next.js imports — each takes its dependencies as argument
 | `database.ts` | The `Db` interface, the Postgres connection pool, the schema migrations |
 | `test-database.ts` | For unit tests: the same schema on PGlite, Postgres in WebAssembly |
 | `errors.ts` | `ApiError`: an error code plus its HTTP status, recognised across bundled copies of the module |
-| `validation.ts` | Checks every untrusted input: credential JSON, client data |
+| `validation.ts` | Checks every untrusted input: usernames, credential JSON, client data |
 | `challenges.ts` | Issues challenges and redeems each exactly once, for the browser it was issued to |
 | `sessions.ts` | Session tokens: create, validate (with sliding expiry), revoke |
 | `accounts.ts` | Users and their stored passkeys |
 | `rate-limit.ts` | Per-client request limits, counted in the database |
 | `log.ts` | One-line JSON security log |
-| `ceremonies.ts` | The WebAuthn logic: options, verification, generated names, sign-in, sign-out |
+| `ceremonies.ts` | The WebAuthn logic: options, verification, sign-in, sign-out |
 | `backend.ts` | Wires the above into one `PasskeyBackend` object, with `transaction()` for all-or-nothing writes |
 
 Next.js glue:
@@ -46,7 +46,7 @@ Outside this folder: `src/instrumentation.ts` (starts the backend when the serve
    - in one transaction, raises the passkey's signature counter — refusing if it did not grow — and creates a session.
 5. **Cookie** — the route sets the httpOnly session cookie and answers `{ "user": … }`. From now on the endpoint wrapper resolves that cookie on every API request.
 
-Registration is the same shape: `startRegistration` makes up the *pending* account — a random user handle and a name like "Traveller 7K3QX2" — and stores it with the challenge; `finishRegistration` verifies the new credential and only then creates the account, the passkey and the session, in one transaction.
+Registration is the same shape: `startRegistration` checks the username is free and stores the *pending* account — a random user handle and the name — with the challenge; `finishRegistration` verifies the new credential and only then creates the account, the passkey and the session, in one transaction.
 
 ## Running and testing
 

@@ -3,20 +3,34 @@
  * written: the end-to-end tests select `section.passkey` and `p.message`.
  * Every rule is scoped under .passkey instead.
  */
-.passkey {
+.passkey,
+.passkey form,
+.passkey label {
 	display: flex;
 	flex-direction: column;
 	gap: 0.75rem;
+}
+
+.passkey {
 	width: min(100%, 40ch);
 	margin-block-start: 1.5rem;
 	text-align: center;
 }
 
+.passkey label {
+	gap: 0.25rem;
+	color: var(--gray);
+	font-size: 0.875rem;
+	text-align: start;
+}
+
 /*
  * The site's button: a light outline on the black page, in the page's
- * pixel font, faded in when it appears. Hovering fills it in.
+ * pixel font, faded in when it appears. Hovering fills it in. A link that
+ * leads to an action (`.button`) looks the same.
  */
-.passkey button {
+.passkey button,
+.passkey .button {
 	display: flex;
 	justify-content: center;
 	gap: 5px;
@@ -27,16 +41,32 @@
 	color: var(--light);
 	font: inherit;
 	cursor: pointer;
+	text-decoration: none;
 	animation: passkey-fade-in 0.5s;
 	transition: background-color 0.15s, color 0.15s;
 }
 
-.passkey button:hover:not(:disabled) {
+.passkey button:hover:not(:disabled),
+.passkey .button:hover {
 	background-color: var(--light);
 	color: var(--black);
 }
 
-.passkey button:focus-visible {
+/* The field in the same outline, with a text cursor instead of a fill on hover. */
+.passkey input {
+	padding: 15px;
+	border: 2px solid var(--light);
+	border-radius: 5px;
+	background: none;
+	color: var(--light);
+	font: inherit;
+	font-size: 1rem;
+	animation: passkey-fade-in 0.5s;
+}
+
+.passkey button:focus-visible,
+.passkey .button:focus-visible,
+.passkey input:focus-visible {
 	outline: 2px solid var(--orange);
 	outline-offset: 3px;
 }
@@ -67,7 +97,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.passkey button {
+	.passkey button,
+	.passkey .button,
+	.passkey input {
 		animation: none;
 		transition: none;
 	}

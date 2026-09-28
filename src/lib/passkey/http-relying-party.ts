@@ -79,7 +79,8 @@ export const createHttpRelyingParty = ({
 
 	return {
 		rpId,
-		registrationOptions: () => request("POST", "/registration/options", {}),
+		registrationOptions: (input) =>
+			request("POST", "/registration/options", input),
 		verifyRegistration: (credential) =>
 			userFrom(request("POST", "/registration/verify", credential)),
 		authenticationOptions: () => request("POST", "/authentication/options", {}),
