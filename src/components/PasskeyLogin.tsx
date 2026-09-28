@@ -130,27 +130,27 @@ export function PasskeyLogin() {
 		// React may mount twice in development; the abandoned run stops at its next await.
 		let active = true;
 		void (async () => {
-			const detected = await detectCapabilities();
+			const backend = createRelyingParty();
+			relyingParty.current = backend;
+			// Side by side: the session request is what the page waits for.
+			const [detected, session] = await Promise.all([
+				detectCapabilities(),
+				backend.currentUser().then(
+					(current) => ({ current }),
+					(cause: unknown) => ({ cause }),
+				),
+			]);
 			if (!active) {
 				return;
 			}
 			setCapabilities(detected);
-			if (!detected.webauthn) {
+			// Without WebAuthn the page already explains that passkeys cannot
+			// work here; a failed session request would add nothing.
+			if ("cause" in session && detected.webauthn) {
+				setFeedback(failure(session.cause, "session"));
+			} else {
+				setUser("current" in session ? session.current : null);
 				setFeedback({ status: "idle", message: "" });
-				return;
-			}
-			const backend = createRelyingParty();
-			relyingParty.current = backend;
-			try {
-				const current = await backend.currentUser();
-				if (active) {
-					setUser(current);
-					setFeedback({ status: "idle", message: "" });
-				}
-			} catch (cause) {
-				if (active) {
-					setFeedback(failure(cause, "session"));
-				}
 			}
 		})();
 		return () => {
@@ -164,7 +164,12 @@ export function PasskeyLogin() {
 
 	return (
 		<section className="passkey" aria-busy={busy}>
-			{capabilities && !capabilities.webauthn ? (
+			{/*
+			 * Nothing until the session is known: the sign-in buttons would
+			 * otherwise flash for a visitor who is signed in. The page is
+			 * prerendered, so the server's HTML has this empty state too.
+			 */}
+			{status === "loading" ? null : capabilities && !capabilities.webauthn ? (
 				<p className="message error">
 					{capabilities.secureContext
 						? "This browser doesn't support passkeys."

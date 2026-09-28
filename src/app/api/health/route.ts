@@ -8,7 +8,7 @@ import { passkeyBackend } from "@/lib/server/passkey/runtime";
 export const GET = async () => {
 	const headers = { "Cache-Control": "no-store" };
 	try {
-		const backend = await passkeyBackend();
+		const backend = passkeyBackend();
 		await backend.db.query("SELECT 1");
 		return Response.json({ ok: true }, { headers });
 	} catch (error) {

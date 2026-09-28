@@ -154,6 +154,35 @@ export const migrate = (db: Db): Promise<void> =>
 	});
 
 /**
+ * Wraps a database so the migrations run just before its first query
+ * rather than when the server starts. A request that needs no database —
+ * reading the session of a visitor without a session cookie — then never
+ * waits for the connection, nor wakes a suspended Neon database. If the
+ * migrations fail, the next query tries them again.
+ */
+export const migrateOnFirstUse = (db: Db): Db => {
+	let ready: Promise<void> | undefined;
+	const whenReady = (): Promise<void> => {
+		ready ??= migrate(db).catch((error: unknown) => {
+			ready = undefined;
+			throw error;
+		});
+		return ready;
+	};
+	return {
+		async query<Row>(text: string, params?: unknown[]) {
+			await whenReady();
+			return db.query<Row>(text, params);
+		},
+		async transaction(fn) {
+			await whenReady();
+			return db.transaction(fn);
+		},
+		close: () => db.close(),
+	};
+};
+
+/**
  * Neon's connection strings say `sslmode=require`, which node-postgres
  * already treats as `verify-full` (encrypted, and the server's certificate
  * checked) while printing a warning that this will change. Asking for

@@ -39,6 +39,42 @@ test("register, stay signed in across reloads, sign out and sign in again", asyn
 	expect(stored[0].last_used_at).not.toBeNull();
 });
 
+test("nothing is shown until the session is known", async ({ app }) => {
+	// Session requests wait at this gate, as they would on a slow cold start.
+	let openGate = () => {};
+	let gate = Promise.resolve();
+	await app.page.route("**/api/passkey/session", async (route) => {
+		await gate;
+		await route.continue();
+	});
+	const loadWhileHeld = async () => {
+		gate = new Promise<void>((resolve) => {
+			openGate = resolve;
+		});
+		await Promise.all([
+			app.page.waitForRequest("**/api/passkey/session"),
+			app.page.goto("/"),
+		]);
+		// The page has hydrated and asked; it must not guess the answer.
+		expect(await app.buttons()).toEqual([]);
+		expect(await app.signedInAs()).toBeNull();
+		openGate();
+		await app.settle();
+	};
+
+	await loadWhileHeld();
+	expect(await app.buttons()).toEqual([
+		"Create a passkey",
+		"Sign in with a passkey",
+	]);
+
+	await app.createAccount();
+	const name = await app.signedInAs();
+	await loadWhileHeld();
+	expect(await app.signedInAs()).toBe(name);
+	expect(await app.buttons()).toEqual(["Sign out"]);
+});
+
 test("signing up asks for no name, and a signed-in user can only sign out", async ({
 	app,
 }) => {

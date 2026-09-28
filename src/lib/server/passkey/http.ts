@@ -163,12 +163,15 @@ export const passkeyEndpoint =
 		let backend: PasskeyBackend | null = null;
 		let response: Response;
 		try {
-			backend = await passkeyBackend();
-			scheduleCleanup(backend);
+			backend = passkeyBackend();
 			const { config } = backend;
 			context.clientAddress = () => clientAddressOf(request.headers, config);
 			if (!SAFE_METHODS.has(request.method)) {
 				checkOrigin(request, config);
+				// Only requests that change something use the database anyway;
+				// reading the session without a cookie never does, so a
+				// signed-out visitor does not wake the database for the cleanup.
+				scheduleCleanup(backend);
 			}
 			const cookieStore = await cookies();
 			Object.assign(context, await resolveSession(cookieStore, backend));

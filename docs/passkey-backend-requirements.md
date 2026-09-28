@@ -165,7 +165,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-AUTHV-7** Response `200 { "user": User }` plus the session cookie.
 
 ### 4.5 `GET /session`
-- **BR-SES-1** Always `200`: `{ "user": User }` for a live session, otherwise `{ "user": null }`. Never `401` — the frontend calls this on every page load and would show an error.
+- **BR-SES-1** Always `200`: `{ "user": User }` for a live session, otherwise `{ "user": null }`. Never `401` — the frontend calls this on every page load and would show an error. It shows no buttons until this answers, so without a session cookie it answers without touching the database (BR-OPS-1).
 - **BR-SES-2** An unknown or expired session cookie is cleared in the response.
 - **BR-SES-3** MAY extend the session (sliding expiry, BR-COOK-5).
 
@@ -302,8 +302,8 @@ Postgres. Times are `timestamptz`; the application passes its own clock's time, 
 
 ## 10. Operations
 
-- **BR-OPS-1** Startup order: validate configuration, connect to the database, run migrations, then accept requests. A self-hosted server stops on invalid configuration (BR-CONF-1). On Vercel every function instance does this on its cold start; a failure is logged and the next request tries again.
-- **BR-OPS-2** Expired challenges (after BR-CH-8's retention), sessions and rate-limit windows are deleted at most every 10 minutes per instance. There is no timer — a Vercel function only runs while it serves requests — so an API request schedules the cleanup with Next.js's `after()`, which runs it once the response has been sent. A failure is logged and never affects a response.
+- **BR-OPS-1** Startup validates the configuration. A self-hosted server then connects to the database and runs the migrations before accepting requests, and stops on invalid configuration (BR-CONF-1). On Vercel, Next.js holds back the first request of every cold start until startup is done, so startup does not wait for the database there: the first query connects and migrates, and if that fails, the next one tries again. `GET /session` without a session cookie needs no database at all, so a signed-out visitor never waits for the connection — nor wakes a suspended Neon database.
+- **BR-OPS-2** Expired challenges (after BR-CH-8's retention), sessions and rate-limit windows are deleted at most every 10 minutes per instance. There is no timer — a Vercel function only runs while it serves requests — so a POST or DELETE request (which uses the database anyway) schedules the cleanup with Next.js's `after()`, which runs it once the response has been sent. A failure is logged and never affects a response.
 - **BR-OPS-3** The database is Neon's: it keeps a restore history for point-in-time recovery, as long as the plan allows. Losing the data orphans every passkey.
 - **BR-OPS-4** The client address comes from `X-Forwarded-For`. On Vercel that header holds the client's address, set by Vercel itself, so the default (the rightmost entry) is right. A self-hosted server runs behind a reverse proxy that appends the client address to it: Next.js fills the header from the connection only when a request has none, so without a proxy a client can choose its own rate-limit key. With several proxies `PASSKEY_XFF_DEPTH` is their number; a proxy that sets another header (e.g. `X-Real-IP`) is used through `PASSKEY_CLIENT_IP_HEADER`. Origin checks do not depend on the proxy: they compare against `PASSKEY_ORIGIN`.
 - **BR-OPS-5** Any number of instances may run at once: all state is in Postgres. Per instance there is only the connection pool and the time of the last cleanup.

@@ -24,7 +24,7 @@ The UI talks to the backend through `src/lib/passkey/http-relying-party.ts`; not
 
 ### On Vercel
 
-With the Neon integration installed on the project, nothing needs configuring: it sets `DATABASE_URL`, and the site's address comes from Vercel's own variables (the production domain in production, the branch URL in a preview — passkeys on a preview work on that URL only). The tables are created on the first request after a deploy. `GET /api/health` answers `{ "ok": true }` once the database is reachable.
+With the Neon integration installed on the project, nothing needs configuring: it sets `DATABASE_URL`, and the site's address comes from Vercel's own variables (the production domain in production, the branch URL in a preview — passkeys on a preview work on that URL only). The tables are created by the first request that needs the database. `GET /api/health` answers `{ "ok": true }` once the database is reachable.
 
 ### Locally
 
