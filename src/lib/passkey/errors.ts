@@ -4,13 +4,11 @@
  * shows its own text for the code.
  */
 export type PasskeyErrorCode =
-	| "invalid_username"
-	| "username_taken"
-	| "not_signed_in"
 	| "challenge_expired"
 	| "unknown_credential"
 	| "verification_failed"
 	| "unsupported_authenticator"
+	| "rate_limited"
 	| "network_error";
 
 export class PasskeyError extends Error {
@@ -29,9 +27,7 @@ const GENERIC = "Something went wrong with passkeys. Try again.";
 
 /** A Map, so a code from the backend can never hit an Object.prototype key. */
 const RELYING_PARTY_MESSAGES = new Map<string, string>([
-	["invalid_username", "Enter a username to create a passkey."],
-	["username_taken", "That username is taken. Pick another one."],
-	["not_signed_in", "Your session has ended. Sign in again."],
+	["rate_limited", "Too many attempts. Wait a minute and try again."],
 	["challenge_expired", "The request expired. Try again."],
 	["unknown_credential", "That passkey isn't registered here any more."],
 	["verification_failed", "Your passkey couldn't be verified. Try again."],
@@ -44,9 +40,9 @@ const RELYING_PARTY_MESSAGES = new Map<string, string>([
 
 /**
  * Raw error names and messages are for developers only. A warning, not an
- * error: these failures are expected (a cancelled prompt, a replaced autofill
- * request) and the UI already explains them, while Next.js's development
- * overlay reports every console.error as a bug in the app.
+ * error: these failures are expected (say, a cancelled prompt) and the UI
+ * already explains them, while Next.js's development overlay reports every
+ * console.error as a bug in the app.
  */
 export const logError = (cause: unknown, ceremony: Ceremony): void => {
 	if (process.env.NODE_ENV === "development") {
@@ -78,10 +74,6 @@ export const describeError = (
 			return ceremony === "registration"
 				? "Passkey creation was cancelled or didn't complete. Try again."
 				: "Sign-in was cancelled or didn't complete. Try again.";
-		case "InvalidStateError":
-			return ceremony === "registration"
-				? "This device already has a passkey for your account."
-				: GENERIC;
 		case "NotSupportedError":
 			return "This device or browser can't use the kind of passkey this site asks for.";
 		case "SecurityError":

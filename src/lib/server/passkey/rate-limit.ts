@@ -1,9 +1,11 @@
 /**
  * Rate limiting — docs/passkey-backend-requirements.md BR-SEC-5.
  *
- * A fixed-window counter per key, kept in memory. That is enough for a single
- * server process; several processes would need a shared store (BR-OPS-5).
+ * A fixed-window counter per key, kept in the database: on Vercel each
+ * request may run in a different instance of the function, so a counter in
+ * memory would only see part of the traffic (BR-OPS-5).
  */
+import type { Sql } from "./database";
 import { ApiError } from "./errors";
 
 export interface RateLimitRule {
@@ -18,46 +20,50 @@ export const RATE_LIMITS = {
 	options: { limit: 30, windowMs: MINUTE },
 	/** Per client IP, for both verify endpoints. */
 	verify: { limit: 10, windowMs: MINUTE },
-	// No per-username limit: anyone could use it up for someone else's name and
-	// stop them from adding a passkey. Probing names is bounded per IP instead.
 } satisfies Record<string, RateLimitRule>;
 
 export interface RateLimiter {
 	/** Counts one request against `key`; throws `rate_limited` when over the limit. */
-	consume(key: string, rule: RateLimitRule): void;
-	/** Forgets windows that have ended, so the map does not grow forever. */
-	prune(): void;
+	consume(key: string, rule: RateLimitRule): Promise<void>;
+	/** Deletes windows that have ended, so the table does not grow forever. */
+	prune(): Promise<number>;
 }
 
-export const createRateLimiter = (now: () => number): RateLimiter => {
-	const windows = new Map<string, { count: number; resetAt: number }>();
+export const createRateLimiter = (
+	sql: Sql,
+	now: () => number,
+): RateLimiter => ({
+	async consume(key, { limit, windowMs }) {
+		const time = now();
+		// One atomic statement: concurrent requests on other instances can
+		// neither lose a count nor both start a fresh window.
+		const { rows } = await sql.query<{ count: number; reset_at: Date }>(
+			`INSERT INTO rate_limits AS r (key, count, reset_at) VALUES ($1, 1, $3)
+			ON CONFLICT (key) DO UPDATE SET
+				count = CASE WHEN r.reset_at <= $2 THEN 1 ELSE r.count + 1 END,
+				reset_at = CASE WHEN r.reset_at <= $2 THEN excluded.reset_at ELSE r.reset_at END
+			RETURNING count, reset_at`,
+			[key, new Date(time), new Date(time + windowMs)],
+		);
+		const { count, reset_at } = rows[0];
+		if (count > limit) {
+			const retryAfter = Math.max(
+				1,
+				Math.ceil((reset_at.getTime() - time) / 1000),
+			);
+			throw new ApiError(
+				"rate_limited",
+				`Too many requests; retry in ${retryAfter} s.`,
+				{ "Retry-After": String(retryAfter) },
+			);
+		}
+	},
 
-	return {
-		consume(key, { limit, windowMs }) {
-			const time = now();
-			let window = windows.get(key);
-			if (!window || window.resetAt <= time) {
-				window = { count: 0, resetAt: time + windowMs };
-				windows.set(key, window);
-			}
-			window.count += 1;
-			if (window.count > limit) {
-				const retryAfter = Math.ceil((window.resetAt - time) / 1000);
-				throw new ApiError(
-					"rate_limited",
-					`Too many requests; retry in ${retryAfter} s.`,
-					{ "Retry-After": String(retryAfter) },
-				);
-			}
-		},
-
-		prune() {
-			const time = now();
-			for (const [key, window] of windows) {
-				if (window.resetAt <= time) {
-					windows.delete(key);
-				}
-			}
-		},
-	};
-};
+	async prune() {
+		const { rowCount } = await sql.query(
+			"DELETE FROM rate_limits WHERE reset_at <= $1",
+			[new Date(now())],
+		);
+		return rowCount;
+	},
+});

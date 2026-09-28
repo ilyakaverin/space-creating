@@ -9,7 +9,6 @@ export type SecurityEvent =
 	| "registration"
 	| "sign_in"
 	| "sign_out"
-	| "account_deleted"
 	| "unknown_credential"
 	| "counter_regression"
 	| "request_rejected";

@@ -3,6 +3,7 @@
  * `http.ts` and `cookies.ts` are the only ones that know about Next.js; the
  * rest is plain TypeScript.
  */
+import { after } from "next/server";
 import "server-only";
 import {
 	type PasskeyBackend,
@@ -10,102 +11,98 @@ import {
 	createPasskeyBackend,
 } from "./backend";
 import { ConfigError, parseConfig } from "./config";
+import { connectDatabase, migrate } from "./database";
 
-/** Where the routes live: src/app/api/passkey. */
-export const API_PATH = "/api/passkey";
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
-
-/**
- * Next.js writes NEXT_PUBLIC_ variables into the code at build time, in the
- * server bundle as in the browser one, so both sides always agree on the
- * mode. Only the full `process.env.NEXT_PUBLIC_…` expression is replaced.
- */
-const configuredApiUrl = (): string =>
-	process.env.NEXT_PUBLIC_PASSKEY_API_URL?.trim().replace(/\/+$/, "") ?? "";
-
-/**
- * The built-in backend runs only when the frontend is pointed at it. Without
- * NEXT_PUBLIC_PASSKEY_API_URL the frontend keeps passkeys in the browser and
- * the server needs no configuration or database at all.
- */
-export const isBackendEnabled = (): boolean => configuredApiUrl() === API_PATH;
 
 /**
  * Next.js can load this module several times in one process: hot reload in
  * development, and separate bundles for instrumentation.ts and the route
  * handlers. The one backend per process therefore lives on globalThis, so
- * they all share one database connection, rate limiter and cleanup timer.
- * Changing the configuration needs a server restart.
+ * they all share one connection pool. Changing the configuration needs a
+ * restart (on Vercel, a redeploy).
  */
 const holder = globalThis as typeof globalThis & {
-	passkeyBackend?: PasskeyBackend;
-	passkeyBackendOffWarned?: boolean;
+	passkeyBackend?: Promise<PasskeyBackend>;
+	passkeyNextCleanup?: number;
 };
 
-/**
- * The cleanup runs on a timer, outside any request: an error there (a full
- * disk, a locked database) would otherwise crash the whole server. It is
- * logged instead, and the next run tries again.
- */
-const cleanupSafely = (backend: PasskeyBackend): void => {
+const start = async (): Promise<PasskeyBackend> => {
+	const config = parseConfig(process.env, {
+		dev: process.env.NODE_ENV === "development",
+	});
+	const db = connectDatabase(config.databaseUrl);
 	try {
-		cleanupExpired(backend);
+		await migrate(db);
 	} catch (error) {
-		console.error("[passkey] cleanup of expired rows failed:", error);
+		await db.close().catch(() => undefined);
+		throw error;
 	}
+	return createPasskeyBackend(config, { db });
 };
 
 /**
- * Validates the configuration, opens and migrates the database, and starts
- * the periodic cleanup. Throws on bad configuration so the server does not
- * start half-working (BR-CONF-1, BR-OPS-1). Returns null when disabled.
+ * The backend of this process: validates the configuration, connects to
+ * the database and brings its schema up to date, once. A failed start is
+ * not kept, so the next request tries again — the database may only have
+ * been unreachable for a moment.
  */
-export const passkeyBackend = (): PasskeyBackend | null => {
-	// `next build` loads the route modules to analyse them; no database then.
-	if (process.env.NEXT_PHASE === "phase-production-build") {
-		return null;
-	}
-	if (!isBackendEnabled()) {
-		// Pointing the frontend at a different URL is legitimate (a separate
-		// backend), but "https://this-site/api/passkey" would silently leave
-		// this one off, so say so once.
-		if (configuredApiUrl() && !holder.passkeyBackendOffWarned) {
-			holder.passkeyBackendOffWarned = true;
-			console.warn(
-				`[passkey] The built-in backend is off: NEXT_PUBLIC_PASSKEY_API_URL is "${configuredApiUrl()}", not "${API_PATH}".`,
-			);
-		}
-		return null;
-	}
+export const passkeyBackend = (): Promise<PasskeyBackend> => {
 	if (!holder.passkeyBackend) {
-		const backend = createPasskeyBackend(
-			parseConfig(process.env, {
-				dev: process.env.NODE_ENV === "development",
-			}),
-		);
-		// At startup a failure should stop the server, so no safety net here.
-		cleanupExpired(backend);
-		// unref: the timer alone must not keep the process alive on shutdown.
-		setInterval(() => cleanupSafely(backend), CLEANUP_INTERVAL_MS).unref();
-		holder.passkeyBackend = backend;
+		holder.passkeyBackend = start().catch((error: unknown) => {
+			holder.passkeyBackend = undefined;
+			throw error;
+		});
 	}
 	return holder.passkeyBackend;
 };
 
 /**
- * Called by src/instrumentation.ts at server start. With the passkey backend
- * enabled, bad configuration or an unusable database stops the server here
- * instead of failing on the first sign-in (BR-OPS-1).
+ * Deletes expired rows (BR-OPS-2) at most every ten minutes per instance.
+ * There is no timer: on Vercel a function instance only runs while it
+ * serves requests. So a request schedules it with `after`, which runs once
+ * the response has been sent and keeps the instance alive until it is done.
  */
-export const startPasskeyBackend = (): void => {
+export const scheduleCleanup = (backend: PasskeyBackend): void => {
+	const time = backend.now();
+	if (time < (holder.passkeyNextCleanup ?? 0)) {
+		return;
+	}
+	holder.passkeyNextCleanup = time + CLEANUP_INTERVAL_MS;
+	after(async () => {
+		try {
+			await cleanupExpired(backend);
+		} catch (error) {
+			console.error("[passkey] cleanup of expired rows failed:", error);
+		}
+	});
+};
+
+/**
+ * Called by src/instrumentation.ts when the server starts, so a
+ * self-hosted server with bad configuration stops right away instead of
+ * failing on the first sign-in (BR-OPS-1). On Vercel there is no server to
+ * stop: the problem is logged, and API requests fail until it is fixed.
+ */
+export const startPasskeyBackend = async (): Promise<void> => {
+	// `next build` may run instrumentation too; the build needs no database.
+	if (process.env.NEXT_PHASE === "phase-production-build") {
+		return;
+	}
 	try {
-		passkeyBackend();
+		await passkeyBackend();
 	} catch (error) {
-		if (error instanceof ConfigError && process.env.NODE_ENV === "production") {
+		if (error instanceof ConfigError) {
 			// Just the list of problems, not a stack trace through compiled code.
 			console.error(error.message);
-			process.exit(1);
+			if (process.env.NODE_ENV === "production" && !process.env.VERCEL) {
+				process.exit(1);
+			}
+			return;
 		}
-		throw error;
+		console.error(
+			"[passkey] The backend could not start; each request will try again:",
+			error,
+		);
 	}
 };

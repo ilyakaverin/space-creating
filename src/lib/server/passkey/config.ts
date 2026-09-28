@@ -2,8 +2,8 @@
  * Backend configuration — docs/passkey-backend-requirements.md §2.2.
  *
  * `parseConfig` is a pure function of an environment object, so it can be
- * unit-tested; `runtime.ts` calls it once at startup with `process.env` and
- * the server refuses to start if it throws.
+ * unit-tested; `runtime.ts` calls it once at startup with `process.env`. A
+ * self-hosted server refuses to start if it throws.
  */
 
 export interface PasskeyConfig {
@@ -13,8 +13,8 @@ export interface PasskeyConfig {
 	rpId: string;
 	/** Name some authenticators show next to the passkey. */
 	rpName: string;
-	/** SQLite file path, or ":memory:" in tests. */
-	databasePath: string;
+	/** Postgres connection string (Neon: the pooled one). */
+	databaseUrl: string;
 	sessionTtlMs: number;
 	/**
 	 * True when every origin is https. Cookies then get `Secure` and the
@@ -45,7 +45,6 @@ type Env = Record<string, string | undefined>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RP_NAME = "creating space";
-const DEFAULT_DATABASE_PATH = "data/passkeys.sqlite";
 const DEFAULT_SESSION_TTL_DAYS = 30;
 /** `next dev` serves on this port by default, so development works without any setup. */
 const DEV_ORIGIN = "http://localhost:3000";
@@ -83,6 +82,48 @@ const parseOrigin = (value: string, problems: string[]): URL | null => {
 	return url;
 };
 
+/**
+ * On Vercel the site's address is known without configuration: production
+ * runs on the project's production domain (a custom domain if one is set),
+ * a preview deployment on its branch URL.
+ */
+const vercelOrigin = (env: Env): string => {
+	const host =
+		env.VERCEL_ENV === "production"
+			? env.VERCEL_PROJECT_PRODUCTION_URL
+			: env.VERCEL_ENV === "preview"
+				? env.VERCEL_BRANCH_URL || env.VERCEL_URL
+				: undefined;
+	return host?.trim() ? `https://${host.trim()}` : "";
+};
+
+/**
+ * Vercel's Neon integration sets DATABASE_URL (pooled) and, for older
+ * Vercel Postgres projects, POSTGRES_URL. Never echoed in a message: it
+ * contains the password.
+ */
+const parseDatabaseUrl = (env: Env, problems: string[]): string => {
+	const value = env.DATABASE_URL?.trim() || env.POSTGRES_URL?.trim() || "";
+	if (!value) {
+		problems.push(
+			"Set DATABASE_URL to the Postgres connection string. With Neon on Vercel it is set for you; locally, `vercel env pull .env.local` fetches it.",
+		);
+		return "";
+	}
+	let protocol: string;
+	try {
+		protocol = new URL(value).protocol;
+	} catch {
+		protocol = "";
+	}
+	if (protocol !== "postgres:" && protocol !== "postgresql:") {
+		problems.push(
+			"DATABASE_URL must be a connection string starting with postgresql://.",
+		);
+	}
+	return value;
+};
+
 const isIpAddress = (host: string): boolean =>
 	/^[\d.]+$/.test(host) || host.includes(":");
 
@@ -92,8 +133,10 @@ export const parseConfig = (
 ): PasskeyConfig => {
 	const problems: string[] = [];
 
-	// Next.js cannot tell the public origin behind a proxy, so production must name it.
-	const originList = env.PASSKEY_ORIGIN?.trim() || (dev ? DEV_ORIGIN : "");
+	// Next.js cannot tell the public origin behind a proxy, so production must
+	// name it, unless Vercel does.
+	const originList =
+		env.PASSKEY_ORIGIN?.trim() || vercelOrigin(env) || (dev ? DEV_ORIGIN : "");
 	if (!originList) {
 		problems.push(
 			"Set PASSKEY_ORIGIN to the site's origin, e.g. https://example.com.",
@@ -154,6 +197,8 @@ export const parseConfig = (
 		);
 	}
 
+	const databaseUrl = parseDatabaseUrl(env, problems);
+
 	if (problems.length > 0) {
 		throw new ConfigError(problems);
 	}
@@ -161,7 +206,7 @@ export const parseConfig = (
 		origins: urls.map((url) => url.origin),
 		rpId,
 		rpName: env.PASSKEY_RP_NAME?.trim() || DEFAULT_RP_NAME,
-		databasePath: env.DATABASE_PATH?.trim() || DEFAULT_DATABASE_PATH,
+		databaseUrl,
 		sessionTtlMs: ttlDays * DAY_MS,
 		secureCookies: urls.every((url) => url.protocol === "https:"),
 		clientIpHeader,

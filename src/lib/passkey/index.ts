@@ -1,27 +1,23 @@
 import { createHttpRelyingParty } from "./http-relying-party";
-import { createLocalRelyingParty } from "./local-relying-party";
 import type { RelyingParty } from "./types";
 
 export * from "./errors";
 export type * from "./types";
 export * from "./webauthn";
 
-const RP_NAME = "creating space";
+/** Where the route handlers live: src/app/api/passkey. */
+const API_PATH = "/api/passkey";
 
 /**
- * Picks where passkeys are verified and stored: in this browser by default, or
- * on the backend at NEXT_PUBLIC_PASSKEY_API_URL. Both speak the same JSON
- * contract, so the UI does not change. Browser-only — call it in an effect.
+ * The relying party: this site's backend, which verifies passkeys and keeps
+ * accounts in Postgres. Browser-only — call it in an effect.
  *
- * Next.js replaces each `process.env.NEXT_PUBLIC_…` expression with its value
- * at build time, so changing them needs a rebuild.
+ * NEXT_PUBLIC_PASSKEY_RP_ID is only needed when the backend's RP ID is a
+ * parent domain of this page's hostname. Next.js writes its value into the
+ * code at build time, so changing it needs a rebuild.
  */
-export const createRelyingParty = (): RelyingParty => {
-	const apiUrl = process.env.NEXT_PUBLIC_PASSKEY_API_URL?.trim();
-	return apiUrl
-		? createHttpRelyingParty({
-				baseUrl: apiUrl,
-				rpId: process.env.NEXT_PUBLIC_PASSKEY_RP_ID?.trim() || undefined,
-			})
-		: createLocalRelyingParty({ rpName: RP_NAME });
-};
+export const createRelyingParty = (): RelyingParty =>
+	createHttpRelyingParty({
+		baseUrl: API_PATH,
+		rpId: process.env.NEXT_PUBLIC_PASSKEY_RP_ID?.trim() || undefined,
+	});

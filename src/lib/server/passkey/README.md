@@ -2,31 +2,32 @@
 
 The server half of passkey sign-in, specified in [`docs/passkey-backend-requirements.md`](../../../../docs/passkey-backend-requirements.md) (the `BR-*` IDs in the comments point there). The entry points import `server-only`, so Next.js fails the build if browser code ever imports them; the frontend (`src/lib/passkey/`) only talks to the backend over HTTP.
 
-It is off unless `NEXT_PUBLIC_PASSKEY_API_URL=/api/passkey`. Without that, the frontend keeps passkeys in the browser and none of this runs.
+Data lives in Postgres (Neon on Vercel): accounts, passkeys, sessions, challenges and rate-limit counters. Nothing is kept in memory between requests, so any number of server instances can run at once.
 
 ## Files
 
-Plain TypeScript, no Next.js imports — each takes its dependencies as arguments, so the unit tests can pass an in-memory database and a fake clock:
+Plain TypeScript, no Next.js imports — each takes its dependencies as arguments, so the unit tests can pass an in-memory database (PGlite) and a fake clock:
 
 | File | Responsibility |
 |---|---|
-| `config.ts` | Reads and validates the environment (origins, RP ID, database path, session lifetime) |
-| `database.ts` | Opens SQLite, applies the schema migrations |
+| `config.ts` | Reads and validates the environment (database URL, origins — from Vercel's variables if unset — RP ID, session lifetime) |
+| `database.ts` | The `Db` interface, the Postgres connection pool, the schema migrations |
+| `test-database.ts` | For unit tests: the same schema on PGlite, Postgres in WebAssembly |
 | `errors.ts` | `ApiError`: an error code plus its HTTP status, recognised across bundled copies of the module |
-| `validation.ts` | Checks every untrusted input: usernames, credential JSON, client data |
+| `validation.ts` | Checks every untrusted input: credential JSON, client data |
 | `challenges.ts` | Issues challenges and redeems each exactly once, for the browser it was issued to |
 | `sessions.ts` | Session tokens: create, validate (with sliding expiry), revoke |
 | `accounts.ts` | Users and their stored passkeys |
-| `rate-limit.ts` | Per-client request limits |
+| `rate-limit.ts` | Per-client request limits, counted in the database |
 | `log.ts` | One-line JSON security log |
-| `ceremonies.ts` | The WebAuthn logic: options, verification, sign-in, sign-out, account deletion |
-| `backend.ts` | Wires the above into one `PasskeyBackend` object |
+| `ceremonies.ts` | The WebAuthn logic: options, verification, generated names, sign-in, sign-out |
+| `backend.ts` | Wires the above into one `PasskeyBackend` object, with `transaction()` for all-or-nothing writes |
 
 Next.js glue:
 
 | File | Responsibility |
 |---|---|
-| `runtime.ts` | Starts the backend from `process.env` once per process (shared through `globalThis`) |
+| `runtime.ts` | Starts the backend from `process.env` once per process (shared through `globalThis`); schedules the cleanup of expired rows with `after()` |
 | `cookies.ts` | Names and attributes of the session and flow cookies, on the store from `cookies()` |
 | `http.ts` | `passkeyEndpoint` wrapper (Origin check, session cookie, client address, errors → JSON, no-cache headers), `readJson` |
 
@@ -45,11 +46,11 @@ Outside this folder: `src/instrumentation.ts` (starts the backend when the serve
    - in one transaction, raises the passkey's signature counter — refusing if it did not grow — and creates a session.
 5. **Cookie** — the route sets the httpOnly session cookie and answers `{ "user": … }`. From now on the endpoint wrapper resolves that cookie on every API request.
 
-Registration is the same shape: `startRegistration` checks the username and remembers the *pending* account with the challenge; `finishRegistration` verifies the new credential and only then creates the account, the passkey and the session together.
+Registration is the same shape: `startRegistration` makes up the *pending* account — a random user handle and a name like "Traveller 7K3QX2" — and stores it with the challenge; `finishRegistration` verifies the new credential and only then creates the account, the passkey and the session, in one transaction.
 
 ## Running and testing
 
 See the README's "Passkeys" section for setup. Tests:
 
-- `pnpm test` — unit tests (`*.test.ts` next to the code).
-- `pnpm test:e2e` — Playwright builds the app, starts it with `next start` in backend mode with a temporary database, and signs in with Chromium's virtual authenticator (`tests/e2e/`).
+- `pnpm test` — unit tests (`*.test.ts` next to the code), on PGlite.
+- `pnpm test:e2e` — Playwright builds the app, starts it with `next start` on the Postgres database in `E2E_DATABASE_URL`, and signs in with Chromium's virtual authenticator (`tests/e2e/`).

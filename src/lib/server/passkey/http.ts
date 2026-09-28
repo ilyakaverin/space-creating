@@ -4,9 +4,9 @@
  *
  * `passkeyEndpoint` wraps a Next.js route handler so each route only has to
  * read its input, call a ceremony and shape the success response. The
- * wrapper handles everything common: the backend being off, the Origin
- * check, the session cookie, turning errors into `{ code, message }`, and
- * the no-cache headers.
+ * wrapper handles everything common: the Origin check, the session cookie,
+ * turning errors into `{ code, message }`, the no-cache headers and the
+ * occasional cleanup of expired rows.
  */
 import { cookies } from "next/headers";
 import "server-only";
@@ -21,7 +21,7 @@ import {
 } from "./cookies";
 import { ApiError, type ErrorCode } from "./errors";
 import { redact } from "./log";
-import { passkeyBackend } from "./runtime";
+import { passkeyBackend, scheduleCleanup } from "./runtime";
 
 /** Next.js puts no size limit on route handler bodies, so the API sets its own. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -91,16 +91,16 @@ const clientAddressOf = (headers: Headers, config: PasskeyConfig): string => {
  * or expired cookie is deleted; a session past half its lifetime gets a
  * fresh expiry and cookie (sliding expiry).
  */
-const resolveSession = (
+const resolveSession = async (
 	cookies: CookieStore,
 	backend: PasskeyBackend,
-): Pick<RequestContext, "user" | "sessionTokenHash"> => {
+): Promise<Pick<RequestContext, "user" | "sessionTokenHash">> => {
 	const signedOut = { user: null, sessionTokenHash: null };
 	const token = readSessionToken(cookies, backend.config);
 	if (!token) {
 		return signedOut;
 	}
-	const session = backend.sessions.validate(token);
+	const session = await backend.sessions.validate(token);
 	if (!session) {
 		clearSessionCookie(cookies, backend.config);
 		return signedOut;
@@ -163,20 +163,15 @@ export const passkeyEndpoint =
 		let backend: PasskeyBackend | null = null;
 		let response: Response;
 		try {
-			backend = passkeyBackend();
-			if (!backend) {
-				throw new ApiError(
-					"not_found",
-					"The built-in passkey backend is off; set NEXT_PUBLIC_PASSKEY_API_URL=/api/passkey to use it.",
-				);
-			}
+			backend = await passkeyBackend();
+			scheduleCleanup(backend);
 			const { config } = backend;
 			context.clientAddress = () => clientAddressOf(request.headers, config);
 			if (!SAFE_METHODS.has(request.method)) {
 				checkOrigin(request, config);
 			}
 			const cookieStore = await cookies();
-			Object.assign(context, resolveSession(cookieStore, backend));
+			Object.assign(context, await resolveSession(cookieStore, backend));
 			response = await handler({
 				request,
 				cookies: cookieStore,
