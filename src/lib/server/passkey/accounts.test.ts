@@ -71,6 +71,14 @@ describe("account store", () => {
 		expect(await accounts.findCredential("c2")).toBeNull();
 	});
 
+	it("lists an account's passkeys for allowCredentials", async () => {
+		await accounts.addCredential(passkey("c1", 0));
+		expect(await accounts.listCredentials("u1")).toEqual([
+			{ id: "c1", transports: ["internal", "hybrid"] },
+		]);
+		expect(await accounts.listCredentials("nobody")).toEqual([]);
+	});
+
 	it("refuses a credential ID that is already stored", async () => {
 		await accounts.addCredential(passkey("c1", 0));
 		expect(await codeOf(() => accounts.addCredential(passkey("c1", 0)))).toBe(

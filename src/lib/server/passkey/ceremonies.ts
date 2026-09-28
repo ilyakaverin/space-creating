@@ -296,28 +296,47 @@ export const finishRegistration = async (
 // Authentication
 // ---------------------------------------------------------------------------
 
-/** POST /authentication/options (BR-AUTHO). Identical for everyone: reveals no accounts. */
+/**
+ * POST /authentication/options (BR-AUTHO). `{ userName }` limits the sign-in
+ * to that account's passkeys; `{}` lets any passkey this device holds for
+ * the site answer.
+ */
 export const startAuthentication = async (
-	{ challenges, config, limiter }: PasskeyBackend,
+	{ accounts, challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
+	body: unknown,
 ): Promise<PublicKeyCredentialRequestOptionsJSON> => {
 	await limiter.consume(
 		`options:${context.clientAddress()}`,
 		RATE_LIMITS.options,
 	);
+	if (!isRecord(body)) {
+		throw new ApiError("invalid_request", "Expected { userName? }.");
+	}
+	let user: User | null = null;
+	if (body.userName !== undefined) {
+		const { name } = parseUserName(body.userName);
+		user = await accounts.findUserByName(name);
+		// Says no more than registration's username_taken does (BR-SEC-6).
+		if (!user) {
+			throw new ApiError("unknown_user", `No account is named ${name}.`);
+		}
+	}
 	const options = await generateAuthenticationOptions({
 		rpID: config.rpId,
 		challenge: randomBytes32(),
 		timeout: CEREMONY_TIMEOUT_MS,
 		userVerification: "preferred",
-		// Empty: any discoverable passkey for this site may answer, so the
-		// user needs no username to sign in.
-		allowCredentials: [],
+		// With a username, the browser offers only that account's passkeys.
+		// Without, the list is empty: any discoverable passkey for this site
+		// may answer, and the passkey itself says whose it is.
+		allowCredentials: user ? await accounts.listCredentials(user.id) : [],
 	});
 	await challenges.issue({
 		challenge: options.challenge,
 		flowId: context.flowId,
 		type: "authentication",
+		userId: user?.id ?? null,
 	});
 	return options;
 };
@@ -335,7 +354,7 @@ export const finishAuthentication = async (
 	const response = parseAuthenticationResponse(body);
 	const clientData = decodeClientData(response.response.clientDataJSON);
 	// Used up first, before any other check: a replay or a failed attempt can never reuse it.
-	await challenges.redeem({
+	const challenge = await challenges.redeem({
 		challenge: clientData.challenge,
 		flowId: context.flowId,
 		type: "authentication",
@@ -354,11 +373,18 @@ export const finishAuthentication = async (
 		throw new ApiError("unknown_credential", "No account uses this passkey.");
 	}
 
-	// allowCredentials was empty, so the authenticator chose the passkey and
-	// must say whose it is. The library does not compare this (BR-AUTHV-4).
+	// The authenticator may have chosen the passkey itself, so it must say
+	// whose it is. The library does not compare this (BR-AUTHV-4).
 	if (response.response.userHandle !== owner.id) {
 		throw verificationFailed(
 			"The user handle does not match the passkey's account.",
+		);
+	}
+	// A username was typed: the passkey must be that account's, whatever a
+	// modified client sent instead of what allowCredentials offered (BR-AUTHV-8).
+	if (challenge.userId && challenge.userId !== owner.id) {
+		throw verificationFailed(
+			"The passkey belongs to another account than the username typed.",
 		);
 	}
 

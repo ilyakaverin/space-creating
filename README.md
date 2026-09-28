@@ -18,7 +18,7 @@ Installable as a PWA: `public/favicon/site.webmanifest` plus `public/service-wor
 
 ## Passkeys
 
-The home page shows who is signed in, with "Sign out", or a "Log in" link to `/login`. There, "Create a passkey" makes an account under the username typed, and "Sign in with a passkey" lets the browser offer the passkeys this device has for the site — no username needed. A username has one account and an account one passkey, so a device never gets two passkeys for the same account; a taken username is refused before any prompt. Passkeys only work in a secure context — https, or `localhost` in development (not the LAN address `pnpm dev` also prints).
+The home page shows who is signed in, with "Sign out", or a "Log in" link to `/login`. There, the username field comes first, then "Sign in" and, below it, "Sign up". "Sign in" with a username offers only that account's passkeys; with the field empty, the browser offers every passkey this device has for the site. "Sign up" makes an account under the username typed. A username has one account and an account one passkey, so a device never gets two passkeys for the same account; a taken username is refused before any prompt. Passkeys only work in a secure context — https, or `localhost` in development (not the LAN address `pnpm dev` also prints).
 
 The UI talks to the backend through `src/lib/passkey/http-relying-party.ts`; nothing is stored in the browser. The backend lives in `src/lib/server/passkey/` (route handlers under `src/app/api/passkey`, `@simplewebauthn/server`) and keeps accounts, passkeys, sessions, challenges and rate limits in Postgres — Neon, created through Vercel. [Its README](src/lib/server/passkey/README.md) walks through the files.
 
@@ -48,12 +48,12 @@ Binary fields are base64url strings throughout. Options use the WebAuthn Level 3
 | --- | --- | --- |
 | `POST /registration/options` | `{ userName }` | creation options for a new account; `409 username_taken` if the name exists |
 | `POST /registration/verify` | registration credential | `{ user }`, account created, session started |
-| `POST /authentication/options` | `{}` | request options with empty `allowCredentials` (any discoverable passkey) |
+| `POST /authentication/options` | `{ userName? }` | request options for that account's passkeys, or any discoverable passkey without a name; `404 unknown_user` if the name does not exist |
 | `POST /authentication/verify` | assertion | `{ user }`, session started |
 | `GET /session` | — | `{ user }` or `{ user: null }` |
 | `DELETE /session` | — | 204, signed out |
 
-`user` is `{ id, name }`, where `id` is the base64url user handle and `name` the username. Failures answer with a non-2xx status and `{ "code": "...", "message": "..." }`; the UI maps `invalid_username`, `username_taken`, `challenge_expired`, `unknown_credential`, `verification_failed`, `unsupported_authenticator` and `rate_limited` to its own text and shows a generic message for anything else. `message` is for developers and is only logged in development.
+`user` is `{ id, name }`, where `id` is the base64url user handle and `name` the username. Failures answer with a non-2xx status and `{ "code": "...", "message": "..." }`; the UI maps `invalid_username`, `username_taken`, `unknown_user`, `challenge_expired`, `unknown_credential`, `verification_failed`, `unsupported_authenticator` and `rate_limited` to its own text and shows a generic message for anything else. `message` is for developers and is only logged in development.
 
 The backend owns everything security-relevant: challenges are random, single-use, tied to the browser that asked for them and expire with the ceremony timeout; the account a registration would create exists only with its challenge until the passkey is verified; `unknown_credential` is reserved for passkeys it does not know, because the UI then asks the password manager to hide that passkey. The UI fetches options right after the click and only then opens the prompt, so keep the `/options` endpoints fast: Safari rejects the prompt with `NotAllowedError` once user activation has expired. The session lives in an httpOnly, `SameSite` cookie. POST bodies are `application/json` and sign-out uses DELETE, so a cross-site form cannot forge them; the backend also checks `Origin`.
 

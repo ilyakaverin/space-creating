@@ -89,6 +89,38 @@ test("an assertion claiming another account's user handle is rejected", async ({
 	expect(result.body?.code).toBe("verification_failed");
 });
 
+test("a sign-in for a typed username only accepts that account's passkey", async ({
+	app,
+	browser,
+}) => {
+	const other = await openApp(browser);
+	const otherName = await other.createAccount();
+	await other.context.close();
+
+	await app.createAccount();
+	await app.click("Sign out");
+	// A modified client asks for the other account's options, then answers
+	// the challenge with its own passkey instead of one allowCredentials names.
+	const assertion = await app.page.evaluate(async (userName) => {
+		const response = await fetch("/api/passkey/authentication/options", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ userName }),
+		});
+		const options = await response.json();
+		const credential = (await navigator.credentials.get({
+			publicKey: PublicKeyCredential.parseRequestOptionsFromJSON({
+				...options,
+				allowCredentials: [],
+			}),
+		})) as PublicKeyCredential;
+		return credential.toJSON();
+	}, otherName);
+	const result = await app.api(VERIFY, { body: assertion });
+	expect(result.status).toBe(400);
+	expect(result.body?.code).toBe("verification_failed");
+});
+
 test("a signature counter that goes backwards is rejected", async ({ app }) => {
 	await app.goto();
 	await app.createAccount();

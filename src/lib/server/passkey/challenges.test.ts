@@ -46,6 +46,7 @@ describe("challenge store", () => {
 			challenge: "c1",
 			type: "registration",
 			pendingUser,
+			userId: "handle",
 			expiresAt: time + CHALLENGE_TTL_MS,
 		});
 		// Single use: the second attempt finds nothing.
@@ -83,6 +84,23 @@ describe("challenge store", () => {
 			type: "authentication",
 		});
 		expect(record.type).toBe("authentication");
+		expect(record.pendingUser).toBeNull();
+		expect(record.userId).toBeNull();
+	});
+
+	it("remembers the account a sign-in is for when a username was typed", async () => {
+		await store.issue({
+			challenge: "c1",
+			flowId: "flow",
+			type: "authentication",
+			userId: "u1",
+		});
+		const record = await store.redeem({
+			challenge: "c1",
+			flowId: "flow",
+			type: "authentication",
+		});
+		expect(record.userId).toBe("u1");
 		expect(record.pendingUser).toBeNull();
 	});
 

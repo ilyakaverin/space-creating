@@ -77,13 +77,12 @@ export interface App {
 	/** Clicks a button or link and waits until the page has settled. */
 	click(name: string): Promise<void>;
 	/**
-	 * On the login page, creates a passkey for `userName` (a fresh one by
-	 * default). On success the browser ends up on the home page. Resolves to
-	 * the username used.
+	 * On the login page, signs up as `userName` (a fresh one by default). On
+	 * success the browser ends up on the home page. Resolves to the username.
 	 */
 	createAccount(userName?: string): Promise<string>;
-	/** On the login page, signs in with the passkey the authenticator offers. */
-	signIn(): Promise<void>;
+	/** On the login page, signs in — as `userName`, or with the field left empty. */
+	signIn(userName?: string): Promise<void>;
 	/** Calls the API from inside the page, so cookies and the Origin header are real. */
 	api(
 		path: string,
@@ -178,12 +177,13 @@ export const openApp = async (browser: Browser): Promise<App> => {
 		createAccount: async (userName = uniqueName()) => {
 			await goto("/login");
 			await page.fill('input[name="username"]', userName);
-			await click("Create a passkey");
+			await click("Sign up");
 			return userName;
 		},
-		signIn: async () => {
+		signIn: async (userName = "") => {
 			await goto("/login");
-			await click("Sign in with a passkey");
+			await page.fill('input[name="username"]', userName);
+			await click("Sign in");
 		},
 		api,
 		freshAssertion: () =>

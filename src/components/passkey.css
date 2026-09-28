@@ -52,6 +52,33 @@
 	color: var(--black);
 }
 
+/* The main action: the same button, filled; hovering turns it back to the outline. */
+.passkey .primary {
+	background-color: var(--light);
+	color: var(--black);
+}
+
+.passkey .primary:hover:not(:disabled) {
+	background-color: transparent;
+	color: var(--light);
+}
+
+/* A lesser action, dressed as a link: underlined text, no outline. */
+.passkey .link {
+	align-self: center;
+	padding: 0.25rem;
+	border: none;
+	background: none;
+	color: var(--gray);
+	text-decoration: underline;
+	text-underline-offset: 0.3em;
+}
+
+.passkey .link:hover:not(:disabled) {
+	background: none;
+	color: var(--light);
+}
+
 /* The field in the same outline, with a text cursor instead of a fill on hover. */
 .passkey input {
 	padding: 15px;

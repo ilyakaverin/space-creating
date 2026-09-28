@@ -6,6 +6,7 @@
 export type PasskeyErrorCode =
 	| "invalid_username"
 	| "username_taken"
+	| "unknown_user"
 	| "challenge_expired"
 	| "unknown_credential"
 	| "verification_failed"
@@ -34,6 +35,7 @@ const RELYING_PARTY_MESSAGES = new Map<string, string>([
 		"username_taken",
 		"That username is taken. If it's yours, sign in with its passkey.",
 	],
+	["unknown_user", "No account has that username. Sign up to create one."],
 	["rate_limited", "Too many attempts. Wait a minute and try again."],
 	["challenge_expired", "The request expired. Try again."],
 	["unknown_credential", "That passkey isn't registered here any more."],

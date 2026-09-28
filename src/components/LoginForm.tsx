@@ -1,12 +1,12 @@
 /**
- * The login page: create an account with a passkey under a username, or
- * sign in with a passkey this device already has. Either way, the browser
- * then goes to the home page.
+ * The login page: one username field, "Sign in" as the main action and
+ * "Sign up" below it. Either way, the browser then goes to the home page.
  *
- * Sign-in needs no username: the browser offers the passkeys it holds for
- * this site. Registration does, and a taken username is refused before any
- * prompt opens — one username, one account, one passkey, so a device can
- * never hold two passkeys for the same account.
+ * Sign in with a username offers only that account's passkeys; with the
+ * field empty, the browser offers every passkey it holds for this site.
+ * Sign up needs a username, and a taken one is refused before any prompt
+ * opens — one username, one account, one passkey, so a device can never
+ * hold two passkeys for the same account.
  */
 "use client";
 
@@ -36,8 +36,7 @@ export function LoginForm() {
 		}
 	}, [user, router]);
 
-	const createAccount = async (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
+	const signUp = async () => {
 		const backend = relyingParty.current;
 		if (!backend) {
 			return;
@@ -65,15 +64,21 @@ export function LoginForm() {
 		}
 	};
 
-	const signIn = async () => {
+	/** The form's submit, so Enter in the field signs in: the main action. */
+	const signIn = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
 		const backend = relyingParty.current;
 		if (!backend) {
 			return;
 		}
+		const name = userName.trim();
 		setFeedback({ status: "pending", message: "" });
 		let credential: AuthenticationResponseJSON | null = null;
 		try {
-			credential = await getPasskey(await backend.authenticationOptions());
+			// Rejects an unknown username before any authenticator prompt opens.
+			credential = await getPasskey(
+				await backend.authenticationOptions(name ? { userName: name } : {}),
+			);
 			setFeedback({ status: "verifying", message: "" });
 			setUser(await backend.verifyAuthentication(credential));
 		} catch (cause) {
@@ -104,7 +109,7 @@ export function LoginForm() {
 				</p>
 			) : (
 				<>
-					<form onSubmit={createAccount}>
+					<form onSubmit={signIn}>
 						<label>
 							Username
 							<input
@@ -113,18 +118,22 @@ export function LoginForm() {
 								autoCapitalize="none"
 								spellCheck={false}
 								maxLength={64}
-								required
 								value={userName}
 								onChange={(event) => setUserName(event.target.value)}
 							/>
 						</label>
-						<button type="submit" disabled={busy}>
-							Create a passkey
+						<button type="submit" className="primary" disabled={busy}>
+							Sign in
 						</button>
 					</form>
-					<p className="message">Already have one?</p>
-					<button type="button" onClick={signIn} disabled={busy}>
-						Sign in with a passkey
+					{/* An action, so a button — dressed as a link, the lesser choice. */}
+					<button
+						type="button"
+						className="link"
+						onClick={signUp}
+						disabled={busy}
+					>
+						Sign up
 					</button>
 					{capabilities?.webauthn && !capabilities.platformAuthenticator && (
 						<p className="message">

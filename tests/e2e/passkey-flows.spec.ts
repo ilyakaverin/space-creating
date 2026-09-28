@@ -87,10 +87,7 @@ test("the login page asks for a username; signed in, only sign-out is offered", 
 				inputs.map((input) => input.getAttribute("name")),
 			),
 	).toEqual(["username"]);
-	expect(await app.actions()).toEqual([
-		"Create a passkey",
-		"Sign in with a passkey",
-	]);
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
 
 	await app.createAccount();
 	expect(await app.actions()).toEqual(["Sign out"]);
@@ -99,6 +96,51 @@ test("the login page asks for a username; signed in, only sign-out is offered", 
 	await app.page.waitForURL("/");
 	await app.settle();
 	expect(await app.actions()).toEqual(["Sign out"]);
+});
+
+test("signing in with a username offers only that account's passkey", async ({
+	app,
+}) => {
+	const first = await app.createAccount();
+	await app.click("Sign out");
+	const second = await app.createAccount();
+	await app.click("Sign out");
+	expect(await app.credentials()).toHaveLength(2);
+
+	for (const name of [first, second, first.toUpperCase()]) {
+		await app.signIn(name);
+		expect(await app.signedInAs()).toBe(name === second ? second : first);
+		await app.click("Sign out");
+	}
+});
+
+test("signing in with an unknown username says so before any prompt", async ({
+	app,
+}) => {
+	await app.createAccount();
+	await app.click("Sign out");
+	await app.goto("/login");
+	// Counts the WebAuthn prompts the page opens from here on.
+	await app.page.evaluate(() => {
+		const page = window as unknown as { prompts: number };
+		page.prompts = 0;
+		const get = navigator.credentials.get.bind(navigator.credentials);
+		navigator.credentials.get = (options) => {
+			page.prompts += 1;
+			return get(options);
+		};
+	});
+	await app.page.fill('input[name="username"]', "nobody-here");
+	await app.click("Sign in");
+	expect(await app.message()).toBe(
+		"No account has that username. Sign up to create one.",
+	);
+	expect(
+		await app.page.evaluate(
+			() => (window as unknown as { prompts: number }).prompts,
+		),
+	).toBe(0);
+	expect(new URL(app.page.url()).pathname).toBe("/login");
 });
 
 test("the same account never gets a second passkey on a device", async ({

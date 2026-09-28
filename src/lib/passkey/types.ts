@@ -55,8 +55,14 @@ export interface RelyingParty {
 	): Promise<PublicKeyCredentialCreationOptionsJSON>;
 	/** Creates the account with its passkey and signs it in. */
 	verifyRegistration(credential: RegistrationResponseJSON): Promise<User>;
-	/** Fresh options for every attempt, with an empty `allowCredentials` so any discoverable passkey can answer. */
-	authenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON>;
+	/**
+	 * Fresh options for every attempt: for the passkeys of `userName`, or,
+	 * without one, for any passkey this device holds for the site. Rejects
+	 * with `unknown_user` before any prompt if no account has that name.
+	 */
+	authenticationOptions(
+		input?: Partial<RegistrationInput>,
+	): Promise<PublicKeyCredentialRequestOptionsJSON>;
 	/** Verifies the assertion and signs its user in. */
 	verifyAuthentication(credential: AuthenticationResponseJSON): Promise<User>;
 	/** The signed-in user, or null. */

@@ -83,7 +83,8 @@ export const createHttpRelyingParty = ({
 			request("POST", "/registration/options", input),
 		verifyRegistration: (credential) =>
 			userFrom(request("POST", "/registration/verify", credential)),
-		authenticationOptions: () => request("POST", "/authentication/options", {}),
+		authenticationOptions: (input = {}) =>
+			request("POST", "/authentication/options", input),
 		verifyAuthentication: (credential) =>
 			userFrom(request("POST", "/authentication/verify", credential)),
 		currentUser: async () =>

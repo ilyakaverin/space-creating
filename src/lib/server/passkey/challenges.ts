@@ -34,6 +34,11 @@ export interface ChallengeRecord {
 	type: CeremonyType;
 	/** For registration: the account to create once the passkey is verified. */
 	pendingUser: User | null;
+	/**
+	 * The account the challenge is for: the pending one for a registration;
+	 * for a sign-in, the account whose username was typed, or null.
+	 */
+	userId: string | null;
 	expiresAt: number;
 }
 
@@ -49,7 +54,10 @@ export interface IssueChallenge {
 	challenge: string;
 	flowId: string;
 	type: CeremonyType;
+	/** Registration: the account to create. */
 	pendingUser?: User | null;
+	/** Sign-in: the account whose username was typed, if any. */
+	userId?: string | null;
 }
 
 export interface ChallengeStore {
@@ -68,7 +76,7 @@ export const createChallengeStore = (
 	sql: Sql,
 	now: () => number,
 ): ChallengeStore => ({
-	async issue({ challenge, flowId, type, pendingUser }) {
+	async issue({ challenge, flowId, type, pendingUser, userId }) {
 		const createdAt = now();
 		await sql.query(
 			`INSERT INTO challenges (challenge, flow_id, type, user_id, user_name, created_at, expires_at)
@@ -77,7 +85,8 @@ export const createChallengeStore = (
 				challenge,
 				flowId,
 				type,
-				pendingUser?.id ?? null,
+				// user_id holds either account; user_name only a pending one.
+				pendingUser?.id ?? userId ?? null,
 				pendingUser?.name ?? null,
 				new Date(createdAt),
 				new Date(createdAt + CHALLENGE_TTL_MS),
@@ -136,6 +145,7 @@ export const createChallengeStore = (
 				row.user_id && row.user_name
 					? { id: row.user_id, name: row.user_name }
 					: null,
+			userId: row.user_id,
 			expiresAt,
 		};
 	},

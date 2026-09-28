@@ -12,7 +12,7 @@ The words **MUST**, **SHOULD** and **MAY** are used as in RFC 2119.
 
 - The frontend (`src/lib/passkey/http-relying-party.ts`) implements the client side of the contract and always talks to this backend; nothing is stored in the browser. §12 lists optional follow-ups.
 - The backend owns everything security-relevant: challenges, attestation and assertion verification, credential storage, accounts and sessions. The frontend only forwards opaque WebAuthn data.
-- The home page shows who is signed in, with "Sign out", or a "Log in" link. The login page (`/login`) has a username field with "Create a passkey", and "Sign in with a passkey", which needs no username: the browser offers the passkeys the device holds for this site. A signed-in user can only sign out: there is no "add a passkey" and no account deletion.
+- The home page shows who is signed in, with "Sign out", or a "Log in" link. The login page (`/login`) has a username field, "Sign in" as the main action and "Sign up" below it, styled as a link. "Sign in" with a username offers only that account's passkeys; with the field empty, the browser offers every passkey the device holds for this site. A signed-in user can only sign out: there is no "add a passkey" and no account deletion.
 - One username, one account, one passkey. A taken username is refused before any prompt, so a device can never hold two passkeys for the same account. A device can still hold passkeys for *different* accounts: WebAuthn gives a site no way to ask a device which passkeys it holds, so nothing short of tracking the device could stop that.
 
 ```
@@ -86,6 +86,7 @@ Neon Postgres (pooled connection string)
 | `challenge_expired` | 400 | Challenge issued to this browser but past its expiry | "The request expired. Try again." |
 | `forbidden_origin` | 403 | `Origin` header missing or not allowed on POST/DELETE | generic¹ |
 | `unknown_credential` | 404 | The assertion's credential ID is not in the database (see BR-ERR-3) | "That passkey isn't registered here any more." + Signal API |
+| `unknown_user` | 404 | Sign-in with a username no account has | "No account has that username. Sign up to create one." |
 | `username_taken` | 409 | The name belongs to another account | "That username is taken. If it's yours, sign in with its passkey." |
 | `payload_too_large` | 413 | Body over 64 KiB | generic¹ |
 | `unsupported_media_type` | 415 | POST without `application/json` | generic¹ |
@@ -153,11 +154,11 @@ Finishes a registration. Request: the registration credential as produced by `to
 - **BR-REGV-7** Response `200 { "user": User }` plus the session cookie.
 
 ### 4.3 `POST /authentication/options`
-Request: `{}`. The body is ignored but MUST still be JSON (BR-GEN-2). No session needed.
+Request: `{ "userName"?: string }`, JSON either way (BR-GEN-2). No session needed.
 
-- **BR-AUTHO-1** Response `200` — `PublicKeyCredentialRequestOptionsJSON`: `challenge` (§5), `rpId`, `allowCredentials: []`, `userVerification: "preferred"`, `timeout: 300000`. The empty `allowCredentials` makes any discoverable passkey for this RP eligible, so the user needs no username: the browser lists the device's passkeys and the chosen one names its account (BR-AUTHV-4).
-- **BR-AUTHO-2** The response never depends on user input, so it reveals nothing about which accounts exist.
-- **BR-AUTHO-3** The frontend calls this when the user clicks "Sign in with a passkey", right before opening the prompt. No autofill (conditional UI) for now: the username field is for new accounts.
+- **BR-AUTHO-1** Response `200` — `PublicKeyCredentialRequestOptionsJSON`: `challenge` (§5), `rpId`, `allowCredentials`, `userVerification: "preferred"`, `timeout: 300000`.
+- **BR-AUTHO-2** With `userName` (validated as in BR-REGO-1, matched as in BR-REGO-2): `allowCredentials` lists that account's passkeys, so the browser offers only those, and the challenge records the account (BR-CH-2). No such account → `404 unknown_user`, before any prompt. Without `userName`: `allowCredentials: []`, so any discoverable passkey for this RP may answer and names its own account (BR-AUTHV-4).
+- **BR-AUTHO-3** The frontend calls this when the user submits the login form ("Sign in"), right before opening the prompt, with the username if one was typed. No autofill (conditional UI) for now.
 
 ### 4.4 `POST /authentication/verify`
 Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authenticatorAttachment`, `clientExtensionResults`, `response.clientDataJSON`, `response.authenticatorData`, `response.signature`, `response.userHandle`).
@@ -169,6 +170,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-AUTHV-5** Verification follows §7.2, using the stored public key and counter.
 - **BR-AUTHV-6** On success, in one transaction: update the counter, the backed-up flag and `last_used_at`, and create a session (§6), replacing any session the request carried.
 - **BR-AUTHV-7** Response `200 { "user": User }` plus the session cookie.
+- **BR-AUTHV-8** If the challenge records an account (BR-AUTHO-2), the passkey MUST belong to it, otherwise → `400 verification_failed`. The browser only offers that account's passkeys, but a modified client could answer with another.
 
 ### 4.5 `GET /session`
 - **BR-SES-1** Always `200`: `{ "user": User }` for a live session, otherwise `{ "user": null }`. Never `401` — the frontend calls this on every page load and would show an error. It shows no buttons until this answers, so without a session cookie it answers without touching the database (BR-OPS-1).
@@ -184,7 +186,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 ## 5. Challenges (FR-SEC-3)
 
 - **BR-CH-1** 32 bytes from a cryptographically secure generator, encoded base64url.
-- **BR-CH-2** Stored server-side with: type (`registration` / `authentication`), flow ID, pending account (handle and username — registration only), created and expiry times.
+- **BR-CH-2** Stored server-side with: type (`registration` / `authentication`), flow ID, pending account (handle and username — registration only), the account whose username was typed (sign-in only), created and expiry times.
 - **BR-CH-3** Bound to the browser: the options endpoints set a flow cookie (§6.2) if it is missing, and a challenge can only be redeemed by a request carrying the same flow ID. A challenge obtained in one browser is useless in another.
 - **BR-CH-4** A challenge lives for the ceremony timeout (300 s) plus 30 s for the verify request.
 - **BR-CH-5** Single use: redeeming deletes the row atomically (e.g. `DELETE … RETURNING`) **before** any cryptographic verification, so a replayed or failing response can never use it again.
@@ -299,7 +301,7 @@ Postgres. Times are `timestamptz`; the application passes its own clock's time, 
 - **BR-SEC-3** CSRF (FR-SEC-6): state changes need JSON POST or DELETE, which a cross-site page cannot send without a CORS preflight; the backend answers no preflight, `SameSite` cookies are not sent cross-site, and BR-SEC-2 checks the origin anyway. The app has no form actions or Server Actions, so no other endpoint accepts form posts.
 - **BR-SEC-4** No CORS headers while the API is same-origin. If the API is ever split off: an exact origin allow-list, `Access-Control-Allow-Credentials: true`, methods `GET, POST, DELETE`, header `Content-Type` — never `*`.
 - **BR-SEC-5** Rate limits per client IP: options endpoints 30/min, verify endpoints 10/min. The counts live in the `rate_limits` table, updated with one atomic upsert per request, because on Vercel consecutive requests may reach different function instances. Excess → `429 rate_limited` with `Retry-After`. A route handler cannot see the connection, so the IP comes from a header (BR-OPS-4).
-- **BR-SEC-6** Account enumeration: only `/registration/options` reveals whether a name exists (inherent to FR-ERR-2), and probing is bounded by its per-IP limit; `/authentication/options` is never user-specific.
+- **BR-SEC-6** Account enumeration: `/registration/options` (`username_taken`, inherent to FR-ERR-2) and `/authentication/options` with a username (`unknown_user`) reveal whether a name exists; probing is bounded by their per-IP limit. Without a username, `/authentication/options` is the same for everyone.
 - **BR-SEC-7** The server never sees private keys (FR-SEC-4); session tokens are stored only as hashes; no secret is ever returned in a body.
 - **BR-SEC-8** Security events are logged as structured JSON with request ID, user handle, credential ID, IP and user agent: registration, sign-in success and failure (with the failed check), `counter_regression`, `unknown_credential`, sign-out, rate limiting. Cookies, tokens, challenges and full credential payloads are never logged.
 - **BR-SEC-9** Strict schema validation and size limits (BR-GEN-2) run before any lookup or crypto.
@@ -330,6 +332,7 @@ What the merged frontend relies on; each item is also a requirement above.
 - Errors are `{ code, message }`; unknown codes show a generic message (BR-ERR-2).
 - `user.id` is the WebAuthn user handle (BR-GEN-5); `unknown_credential` triggers the Signal API (BR-ERR-3).
 - Registration options are requested with `{ "userName" }`; a taken name answers `409` before any prompt (BR-REGO-3).
+- Authentication options are requested with `{ "userName" }` when one was typed, else `{}`; an unknown name answers `404 unknown_user` before any prompt (BR-AUTHO-2).
 - `NEXT_PUBLIC_PASSKEY_RP_ID` is only needed when the RP ID is not the page's hostname.
 
 ---
@@ -358,11 +361,12 @@ What the merged frontend relies on; each item is also a requirement above.
 - **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` on a throwaway Postgres database named by `E2E_DATABASE_URL`, and cover every flow in FR-TEST-4:
   - "Log in" → register on `/login` → home, reload (still signed in), sign out, sign in with the button;
   - nothing is shown until `GET /session` answers;
-  - the login page has one field, the username; signed in, "Sign out" is the only action, and `/login` sends you home;
+  - the login page has one field, the username, then "Sign in" and "Sign up"; signed in, "Sign out" is the only action, and `/login` sends you home;
+  - sign-in with a username (in any case) offers only that account's passkey; an unknown username is refused before any prompt;
   - the same account never gets a second passkey on a device; a taken username (in any case) is refused before any prompt; a blank one too;
   - sign in when the authenticator has no passkey → neutral message;
   - credential deleted from the database → `404 unknown_credential`, and the virtual authenticator loses the passkey through the Signal API.
-- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration options carry the typed name and a random handle, and refuse invalid names; a signed-out session token is rejected server-side; cookie attributes asserted.
+- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; a sign-in for a typed username answered with another account's passkey; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration options carry the typed name and a random handle, and refuse invalid names; a signed-out session token is rejected server-side; cookie attributes asserted.
 - **BR-TEST-4** Manual checks: Chrome, Safari and Firefox; a platform authenticator and a security key; the real deployed domain (FR-TEST-1, -2, -5).
 
 ---

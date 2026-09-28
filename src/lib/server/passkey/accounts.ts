@@ -49,6 +49,10 @@ export interface AccountStore {
 	/** Throws `username_taken` if the name was registered meanwhile. */
 	createUser(user: User): Promise<void>;
 	findCredential(id: string): Promise<StoredCredential | null>;
+	/** The account's passkeys, oldest first, for `allowCredentials`. */
+	listCredentials(
+		userId: string,
+	): Promise<{ id: string; transports: string[] }[]>;
 	/** Throws `verification_failed` if the credential ID is already stored. */
 	addCredential(credential: NewCredential): Promise<void>;
 	/**
@@ -123,6 +127,14 @@ export const createAccountStore = (
 			backupEligible: row.backup_eligible,
 			backedUp: row.backed_up,
 		};
+	},
+
+	async listCredentials(userId) {
+		const { rows } = await sql.query<{ id: string; transports: string[] }>(
+			"SELECT id, transports FROM credentials WHERE user_id = $1 ORDER BY created_at",
+			[userId],
+		);
+		return rows;
 	},
 
 	async addCredential(credential) {
