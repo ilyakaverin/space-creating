@@ -1,6 +1,6 @@
 # Passkey Login — Backend Requirements
 
-Pet project goal: replace the in-browser relying party with a real backend, so challenges, passkeys and sessions live on a server.
+Pet project goal: passkey sign-up and sign-in without usernames, with challenges, passkeys and sessions on a server and in a Postgres database (Neon, deployed on Vercel).
 Scope: backend only, technical requirements, no implementation code.
 Related: `passkey-frontend-requirements.md` (the `FR-*` IDs referenced below), the README section "Passkeys → Backend contract", and the client that calls this API, `src/lib/passkey/http-relying-party.ts`.
 
@@ -10,19 +10,23 @@ The words **MUST**, **SHOULD** and **MAY** are used as in RFC 2119.
 
 ## 1. Context
 
-- The frontend already implements the client side of the contract. Setting `NEXT_PUBLIC_PASSKEY_API_URL` switches it from the in-browser relying party (`localStorage`) to this backend. Going live needs **no frontend code change**; §12 lists optional follow-ups.
+- The frontend (`src/lib/passkey/http-relying-party.ts`) implements the client side of the contract and always talks to this backend; nothing is stored in the browser. §12 lists optional follow-ups.
 - The backend owns everything security-relevant: challenges, attestation and assertion verification, credential storage, accounts and sessions. The frontend only forwards opaque WebAuthn data.
+- Accounts have no username or display name. "Create a passkey" makes a new account whose name the backend generates; "Sign in with a passkey" lets the browser offer every passkey the device holds for this site. A signed-in user can only sign out: there is no "add a passkey" and no account deletion.
 
 ```
 Browser ── PasskeyLogin.tsx → http-relying-party.ts
    │  JSON over HTTPS, same origin, cookies
    ▼
-Next.js server (next start)
+Next.js server (Vercel Functions, or next start)
    ├─ src/instrumentation.ts                 starts the backend before the first request
-   ├─ src/app/api/passkey/**/route.ts        the seven endpoints (§4)
+   ├─ src/app/api/passkey/**/route.ts        the six endpoints (§4)
    ├─ src/lib/server/passkey/http.ts         shared wrapper: Origin check, session cookie → user, errors
    ├─ src/lib/server/passkey/ceremonies.ts   @simplewebauthn/server calls and policy (§7)
-   └─ src/lib/server/passkey/database.ts     SQLite via better-sqlite3 (§8)
+   └─ src/lib/server/passkey/database.ts     Postgres via node-postgres (§8)
+   │
+   ▼
+Neon Postgres (pooled connection string)
 ```
 
 ---
@@ -32,8 +36,8 @@ Next.js server (next start)
 ### 2.1 Stack
 - **BR-TECH-1** Endpoints are Next.js route handlers (`route.ts`, App Router) inside this app, under `/api/passkey`, on the Node.js runtime. Same origin as the page: no CORS, `SameSite` cookies work, and the RP ID is the site's hostname.
 - **BR-TECH-2** WebAuthn ceremonies use `@simplewebauthn/server`. Its option generators return the WebAuthn Level 3 JSON shapes the frontend parses, and its verifiers accept `PublicKeyCredential.toJSON()` output as sent by the frontend.
-- **BR-TECH-3** Storage is SQLite through `better-sqlite3` (synchronous, transactional, one file). pnpm only runs build scripts for allow-listed packages, so `better-sqlite3` MUST be added to `onlyBuiltDependencies` / `allowBuilds` in `pnpm-workspace.yaml`, or its native module is never compiled.
-- **BR-TECH-4** Server-only code lives under `src/lib/server/`; its entry points import `server-only`, so the build fails if client code imports them. `better-sqlite3` is a native addon and stays out of the bundle (`serverExternalPackages`).
+- **BR-TECH-3** Storage is Postgres — Neon, created through Vercel's integration — reached with `pg` (node-postgres) through a connection pool. On Vercel the pool is registered with `attachDatabasePool` from `@vercel/functions`, so idle connections are closed before a function instance is suspended. The stores see only a small `Db` interface (`query`, `transaction`), so unit tests run the same SQL on PGlite, Postgres compiled to WebAssembly.
+- **BR-TECH-4** Server-only code lives under `src/lib/server/`; its entry points import `server-only`, so the build fails if client code imports them. `pg` is on Next.js's default `serverExternalPackages` list, so it is loaded from `node_modules` rather than bundled.
 - **BR-TECH-5** No auth framework and no JWTs: a session is a database row plus an opaque cookie (§6).
 - **BR-TECH-6** Unit tests use Vitest; end-to-end tests use Playwright with a virtual authenticator (§14).
 
@@ -41,22 +45,21 @@ Next.js server (next start)
 
 | Variable | Kind | Example | Default | Purpose |
 |---|---|---|---|---|
-| `NEXT_PUBLIC_PASSKEY_API_URL` | public, build time | `/api/passkey` | unset → local mode | Switches the frontend to a backend; the built-in one starts only when this is `/api/passkey` (BR-CONF-6) |
+| `DATABASE_URL` | private | `postgresql://…-pooler.…neon.tech/neondb?sslmode=require` | required; `POSTGRES_URL` is read if unset | Postgres connection string. Vercel's Neon integration sets it; `vercel env pull .env.local` copies it for local development |
 | `NEXT_PUBLIC_PASSKEY_RP_ID` | public, build time | `example.com` | page hostname | Only when the RP ID is not the page's hostname; used by the frontend for Signal API calls |
-| `PASSKEY_ORIGIN` | private | `https://example.com` | required in production; `http://localhost:3000` under `pnpm dev` | Expected WebAuthn origin(s) and allowed `Origin` header; comma-separated for several |
+| `PASSKEY_ORIGIN` | private | `https://example.com` | on Vercel derived from its variables (BR-CONF-6); `http://localhost:3000` under `pnpm dev`; otherwise required | Expected WebAuthn origin(s) and allowed `Origin` header; comma-separated for several |
 | `PASSKEY_RP_ID` | private | `example.com` | hostname of `PASSKEY_ORIGIN` | Relying party ID |
 | `PASSKEY_RP_NAME` | private | `creating space` | `creating space` | Shown by some authenticators |
-| `DATABASE_PATH` | private | `data/passkeys.sqlite` | `data/passkeys.sqlite` | SQLite file |
 | `SESSION_TTL_DAYS` | private | `30` | `30` | Session lifetime |
 | `PASSKEY_CLIENT_IP_HEADER` | private | `x-real-ip` | `x-forwarded-for` | Request header the client IP is read from, for rate limits and logs (BR-SEC-5) |
 | `PASSKEY_XFF_DEPTH` | private | `2` | `1` | With `X-Forwarded-For`: the entry counted from the right that holds the client, i.e. the number of proxies |
 
-- **BR-CONF-1** Private settings are read from `process.env` (Next.js loads `.env`) and validated once at startup, in `register()` of `src/instrumentation.ts`. A missing or invalid value MUST stop the server with a clear message, not fail at the first request.
+- **BR-CONF-1** Private settings are read from `process.env` (Next.js loads `.env` and `.env.local`) and validated once at startup, in `register()` of `src/instrumentation.ts`. On a self-hosted server a missing or invalid value MUST stop the process with a clear message, not fail at the first request. On Vercel there is no process to stop: the problems are logged when a function instance starts, and API requests answer `500` until the configuration is fixed. The connection string is never echoed in a message: it holds the password.
 - **BR-CONF-2** `PASSKEY_RP_ID` MUST equal the hostname of every `PASSKEY_ORIGIN` or be a registrable parent of it; this is checked at startup (FR-SEC-2).
-- **BR-CONF-3** Every environment (dev, staging, prod) has its own RP ID and database. Passkeys registered for one RP ID never work on another; this is expected, not a bug.
+- **BR-CONF-3** Every environment (dev, preview, production) has its own RP ID and SHOULD have its own database (the Neon integration can create a database branch per preview deployment). Passkeys registered for one RP ID never work on another; this is expected, not a bug.
 - **BR-CONF-4** Development uses `PASSKEY_ORIGIN=http://localhost:3000` (`pnpm dev`, also the default in development) or the port actually served. The LAN address printed by `pnpm dev` is not a secure context and cannot be used.
-- **BR-CONF-5** Local settings go in `.env` (gitignored); a committed `.env.example` lists every variable with safe defaults. `data/` is gitignored.
-- **BR-CONF-6** The built-in backend starts only when `NEXT_PUBLIC_PASSKEY_API_URL` is `/api/passkey`. Next.js writes `NEXT_PUBLIC_` values into server and browser code at build time, so both always agree on the mode and changing it needs a rebuild. Otherwise the frontend runs in local mode, the server needs no passkey configuration or database, and `/api/passkey/*` answers `404 not_found`. When the variable is set to anything else, the server logs once that the built-in backend is off.
+- **BR-CONF-5** Local settings go in `.env` or `.env.local` (both gitignored); a committed `.env.example` lists every variable with safe defaults. On Vercel they are project environment variables.
+- **BR-CONF-6** Without `PASSKEY_ORIGIN`, a Vercel deployment uses `https://` + `VERCEL_PROJECT_PRODUCTION_URL` in production (the shortest custom domain, else `<project>.vercel.app`) and `https://` + `VERCEL_BRANCH_URL` (else `VERCEL_URL`) in a preview. A preview has several hostnames under `vercel.app`, and an RP ID cannot be `vercel.app` itself (a public suffix), so passkeys on a preview work on its branch URL only. `vercel env pull` writes these variables empty for development, which then falls back to `http://localhost:3000`.
 
 ---
 
@@ -66,7 +69,7 @@ Next.js server (next start)
 - **BR-GEN-2** POST bodies MUST be `Content-Type: application/json` (a `charset` parameter is allowed). Otherwise → `415 unsupported_media_type`. Bodies larger than 64 KiB → `413 payload_too_large`. Invalid JSON or a body that fails schema validation → `400 invalid_request`. Validation happens before any database or crypto work.
 - **BR-GEN-3** Responses are JSON (`Content-Type: application/json`) except `204 No Content`. Every response carries `Cache-Control: no-store` and `X-Content-Type-Options: nosniff`.
 - **BR-GEN-4** Binary values travel as unpadded base64url strings (RFC 4648 §5), never plain base64 (FR-ENC-1). A value that is not valid base64url → `400 invalid_request`.
-- **BR-GEN-5** The user object is `{ "id": string, "name": string, "displayName": string }`, where `id` is the WebAuthn **user handle** in base64url — never a database row number. The frontend passes it to `PublicKeyCredential.signalAllAcceptedCredentials()`, which only works with the real handle.
+- **BR-GEN-5** The user object is `{ "id": string, "name": string }`, where `id` is the WebAuthn **user handle** in base64url — never a database row number — and `name` the name generated at registration (BR-REGO-4).
 - **BR-GEN-6** Undocumented methods on a documented path → `405` (Next.js's default for methods a route does not export). Next.js also answers `HEAD` with the `GET` handler and `OPTIONS` with `204` and an `Allow` header — without any CORS headers.
 - **BR-GEN-7** Success bodies contain at least the fields in §4. Extra fields are allowed and ignored by the frontend.
 
@@ -77,18 +80,14 @@ Next.js server (next start)
 | `code` | Status | Returned when | Frontend shows |
 |---|---|---|---|
 | `invalid_request` | 400 | Invalid JSON, missing fields, bad base64url, unknown `type` | generic¹ |
-| `invalid_username` | 400 | Username empty, too long, control characters; or a different name while adding a passkey | "Enter a username to create a passkey." |
 | `verification_failed` | 400 | Any WebAuthn check fails; challenge unknown, used, or issued to another browser; credential already registered; user handle mismatch; counter regression | "Your passkey couldn't be verified. Try again." |
 | `challenge_expired` | 400 | Challenge issued to this browser but past its expiry | "The request expired. Try again." |
-| `not_signed_in` | 401 | `DELETE /account` without a valid session; session changed during "add a passkey" | "Your session has ended. Sign in again." |
 | `forbidden_origin` | 403 | `Origin` header missing or not allowed on POST/DELETE | generic¹ |
 | `unknown_credential` | 404 | The assertion's credential ID is not in the database (see BR-ERR-3) | "That passkey isn't registered here any more." + Signal API |
-| `not_found` | 404 | The built-in backend is off (BR-CONF-6) | generic¹ |
-| `username_taken` | 409 | The name belongs to another account | "That username is taken. Pick another one." |
 | `payload_too_large` | 413 | Body over 64 KiB | generic¹ |
 | `unsupported_media_type` | 415 | POST without `application/json` | generic¹ |
 | `unsupported_authenticator` | 422 | Public key algorithm not offered, or the key cannot be parsed | "This authenticator can't be used here. Try another one." |
-| `rate_limited` | 429 | Rate limit hit (§9); includes `Retry-After` | generic¹ |
+| `rate_limited` | 429 | Rate limit hit (§9); includes `Retry-After` | "Too many attempts. Wait a minute and try again." |
 | `internal_error` | 500 | Anything unexpected | generic¹ |
 
 ¹ "Something went wrong with passkeys. Try again."
@@ -102,27 +101,22 @@ Next.js server (next start)
 ## 4. Endpoints (FR-API-1…4)
 
 ### 4.1 `POST /registration/options`
-Starts a registration. Works signed out (new account) and signed in (add a passkey to the current account, FR-OPT-2).
+Starts a registration, which always creates a **new account**. Request: `{}` — the body is ignored (any `userName` or `displayName` in it too) but MUST still be JSON (BR-GEN-2).
 
-Request: `{ "userName": string, "displayName"?: string }`. The frontend omits `displayName` when it is empty, and sends only `{ "userName": <account name> }` when adding a passkey.
-
-- **BR-REGO-1** `userName`: trimmed, Unicode NFC-normalized, 1–64 UTF-8 bytes (authenticators may truncate longer names), no control characters (Unicode `Cc`). Email addresses are allowed. Otherwise → `400 invalid_username`.
-- **BR-REGO-2** Names are unique case-insensitively (compared lower-cased after NFC, the same rule as the frontend's local mode). The name is stored as first entered.
-- **BR-REGO-3** `displayName`: optional; trimmed, NFC, at most 64 UTF-8 bytes, no control characters; empty or missing → the username. Invalid → `400 invalid_request`.
-- **BR-REGO-4** Signed out: if the name belongs to an account → `409 username_taken`. This happens before any authenticator prompt (FR-ERR-2). Otherwise a *pending* user is prepared: a fresh 32-byte random user handle, the name and the display name. The pending user is stored only with the challenge (§5), not in `users`, so requesting options cannot reserve a name.
-- **BR-REGO-5** Signed in: the options are always for the session's account. `userName` MUST match the account name case-insensitively, otherwise → `400 invalid_username`; `displayName` is ignored. The challenge records the session's user (BR-CH-2).
+- **BR-REGO-4** A *pending* account is prepared: a fresh 32-byte random user handle and a generated name, `Traveller ` followed by six random characters from Crockford's base32 alphabet (e.g. `Traveller 7K3QX2`). The name is what the passkey picker lists, so two accounts on one device can be told apart; it need not be unique. The pending account is stored only with the challenge (§5), not in `users`, so requesting options creates nothing.
+- **BR-REGO-5** A signed-in caller also gets a new account; on verification the session moves to it (BR-COOK-4). The frontend only offers "Create a passkey" while signed out.
 - **BR-REGO-6** The user handle MUST NOT be derived from the name, email or any personal data (WebAuthn privacy requirement).
 - **BR-REGO-7** Response `200` — `PublicKeyCredentialCreationOptionsJSON`:
 
 | Field | Value |
 |---|---|
 | `rp` | `{ "id": PASSKEY_RP_ID, "name": PASSKEY_RP_NAME }` |
-| `user` | `{ "id": <handle>, "name": <userName>, "displayName": <displayName> }` |
+| `user` | `{ "id": <handle>, "name": <generated name>, "displayName": <generated name> }` |
 | `challenge` | New challenge (§5) |
 | `pubKeyCredParams` | MUST include ES256 (`-7`) and RS256 (`-257`); MAY list EdDSA (`-8`) first |
 | `timeout` | `300000` |
-| `excludeCredentials` | Every credential of this user as `{ "type": "public-key", "id", "transports" }`; `[]` for a new user. An authenticator that already holds one then fails with `InvalidStateError` instead of creating a duplicate |
-| `authenticatorSelection` | `{ "residentKey": "required", "requireResidentKey": true, "userVerification": "preferred" }` — no `authenticatorAttachment`, so phones and security keys stay possible (FR-OPT-3) |
+| `excludeCredentials` | `[]`: the account is new, so it has no passkeys yet |
+| `authenticatorSelection` | `{ "residentKey": "required", "requireResidentKey": true, "userVerification": "preferred" }` — discoverable, so sign-in needs no username; no `authenticatorAttachment`, so phones and security keys stay possible (FR-OPT-3) |
 | `attestation` | `"none"` |
 | `extensions` | MAY be `{ "credProps": true }`; nothing may depend on it, because the frontend's fallback parser drops extensions |
 | `hints` | Omitted |
@@ -147,18 +141,17 @@ Finishes a registration. Request: the registration credential as produced by `to
 
 - **BR-REGV-1** Schema: `id` and `rawId` are equal base64url strings; `type` is `"public-key"`; `clientDataJSON` and `attestationObject` are base64url. `transports` is optional; unknown values are dropped (known: `usb`, `nfc`, `ble`, `smart-card`, `hybrid`, `internal`). `authenticatorData`, `publicKey` and `publicKeyAlgorithm` are informational: the backend MUST take the key and flags from `attestationObject`, not from these fields.
 - **BR-REGV-2** The challenge is read from `clientDataJSON` and redeemed (§5); it MUST be a registration challenge. It is used up even if a later step fails.
-- **BR-REGV-3** If the challenge was issued to a signed-in user, the request MUST still carry that user's session. Otherwise → `401 not_signed_in`.
 - **BR-REGV-4** Verification follows §7.1.
 - **BR-REGV-5** A credential ID that is already stored (for any user) → `400 verification_failed`.
-- **BR-REGV-6** In one transaction: insert the user if new (a unique-name conflict from a concurrent registration → `409 username_taken`), insert the credential (§8) with its transports (FR-ENC-4), and create a session (§6), replacing any session the request carried.
+- **BR-REGV-6** In one transaction: insert the pending account, insert the credential (§8) with its transports (FR-ENC-4), and create a session (§6), replacing any session the request carried.
 - **BR-REGV-7** Response `200 { "user": User }` plus the session cookie.
 
 ### 4.3 `POST /authentication/options`
 Request: `{}`. The body is ignored but MUST still be JSON (BR-GEN-2). No session needed.
 
-- **BR-AUTHO-1** Response `200` — `PublicKeyCredentialRequestOptionsJSON`: `challenge` (§5), `rpId`, `allowCredentials: []`, `userVerification: "preferred"`, `timeout: 300000`. The empty `allowCredentials` makes any discoverable passkey for this RP eligible, which both the sign-in button and autofill (FR-COND-2) need.
+- **BR-AUTHO-1** Response `200` — `PublicKeyCredentialRequestOptionsJSON`: `challenge` (§5), `rpId`, `allowCredentials: []`, `userVerification: "preferred"`, `timeout: 300000`. The empty `allowCredentials` makes any discoverable passkey for this RP eligible, so the user needs no username: the browser lists the device's passkeys and the chosen one names its account (BR-AUTHV-4).
 - **BR-AUTHO-2** The response never depends on user input, so it reveals nothing about which accounts exist.
-- **BR-AUTHO-3** The frontend calls this on page load, when the username field gets focus and after every ceremony (conditional UI), and abandons most of these challenges when it aborts the request. §5 keeps this cheap and bounded.
+- **BR-AUTHO-3** The frontend calls this when the user clicks "Sign in with a passkey", right before opening the prompt. There is no autofill (conditional UI): with no username field there is nowhere to offer it.
 
 ### 4.4 `POST /authentication/verify`
 Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authenticatorAttachment`, `clientExtensionResults`, `response.clientDataJSON`, `response.authenticatorData`, `response.signature`, `response.userHandle`).
@@ -180,24 +173,18 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-SES-4** Deletes the session row and clears the cookie. Idempotent: `204` whether or not a session existed.
 - **BR-SES-5** MUST answer `204 No Content` without a body. The frontend treats a `200` without a JSON body as an invalid response.
 
-### 4.7 `DELETE /account`
-- **BR-ACC-1** Requires a live session, otherwise → `401 not_signed_in`.
-- **BR-ACC-2** In one transaction, deletes the user's credentials, all their sessions (every device), their pending challenges and the user row; clears the cookie; answers `204 No Content`.
-- **BR-ACC-3** The username becomes available again.
-- **BR-ACC-4** The frontend then calls `signalAllAcceptedCredentials` with the deleted user's handle and an empty list, so password managers drop the passkeys.
-
 ---
 
 ## 5. Challenges (FR-SEC-3)
 
 - **BR-CH-1** 32 bytes from a cryptographically secure generator, encoded base64url.
-- **BR-CH-2** Stored server-side with: type (`registration` / `authentication`), flow ID, pending user (handle, name, display name — registration only), session user (when adding a passkey), created and expiry times.
+- **BR-CH-2** Stored server-side with: type (`registration` / `authentication`), flow ID, pending account (handle and generated name — registration only), created and expiry times.
 - **BR-CH-3** Bound to the browser: the options endpoints set a flow cookie (§6.2) if it is missing, and a challenge can only be redeemed by a request carrying the same flow ID. A challenge obtained in one browser is useless in another.
 - **BR-CH-4** A challenge lives for the ceremony timeout (300 s) plus 30 s for the verify request.
 - **BR-CH-5** Single use: redeeming deletes the row atomically (e.g. `DELETE … RETURNING`) **before** any cryptographic verification, so a replayed or failing response can never use it again.
 - **BR-CH-6** Redeem outcomes: not found, already used, other flow or wrong type → `400 verification_failed`; found but expired → `400 challenge_expired`.
-- **BR-CH-7** Several outstanding challenges per flow are allowed (the autofill request and a button-triggered ceremony overlap briefly). At most 5 are kept per flow; issuing a sixth drops the oldest.
-- **BR-CH-8** Expired rows are kept for one hour, so a late answer (e.g. a passkey picked from autofill in a tab left open) is told `challenge_expired`, and then removed by the periodic cleanup (BR-OPS-2).
+- **BR-CH-7** Several outstanding challenges per flow are allowed (a retry, a second tab). At most 5 are kept per flow; issuing a sixth drops the oldest.
+- **BR-CH-8** Expired rows are kept for one hour, so a late answer (e.g. from a laptop that slept with the prompt open) is told `challenge_expired`, and then removed by the periodic cleanup (BR-OPS-2).
 - **BR-CH-9** Challenge values are never logged.
 
 ---
@@ -259,41 +246,41 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 
 ## 8. Data Model
 
-All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
+Postgres. Times are `timestamptz`; the application passes its own clock's time, so tests can control it. Foreign keys cascade on delete.
 
 | Table | Column | Type | Notes |
 |---|---|---|---|
-| `users` | `id` | TEXT PK | User handle, base64url (BR-GEN-5) |
-| | `name` | TEXT | As first entered |
-| | `name_key` | TEXT UNIQUE | Lower-cased NFC form for uniqueness (BR-REGO-2) |
-| | `display_name` | TEXT | |
-| | `created_at` | INTEGER | |
-| `credentials` | `id` | TEXT PK | Credential ID, base64url |
-| | `user_id` | TEXT FK → `users.id` | Indexed |
-| | `public_key` | BLOB | COSE key as returned by verification |
-| | `algorithm` | INTEGER | COSE algorithm ID |
-| | `counter` | INTEGER | Sign counter |
-| | `transports` | TEXT | JSON array (FR-ENC-4) |
-| | `aaguid` | TEXT | Authenticator model, for naming passkeys later |
-| | `backup_eligible` | INTEGER | 0/1 |
-| | `backed_up` | INTEGER | 0/1 |
-| | `name` | TEXT | Default "Passkey"; editable later (§13) |
-| | `created_at` | INTEGER | |
-| | `last_used_at` | INTEGER NULL | |
-| `sessions` | `token_hash` | TEXT PK | SHA-256 of the cookie token |
-| | `user_id` | TEXT FK → `users.id` | Indexed |
-| | `created_at`, `expires_at`, `last_seen_at` | INTEGER | `expires_at` indexed |
-| | `user_agent` | TEXT NULL | Optional |
-| `challenges` | `challenge` | TEXT PK | base64url |
-| | `flow_id` | TEXT | Indexed |
-| | `type` | TEXT | `registration` / `authentication` |
-| | `user_handle`, `user_name`, `user_display_name` | TEXT NULL | Pending user (registration) |
-| | `session_user_id` | TEXT NULL | Set when adding a passkey |
-| | `created_at`, `expires_at` | INTEGER | `expires_at` indexed |
+| `users` | `id` | text PK | User handle, base64url (BR-GEN-5) |
+| | `name` | text | Generated (BR-REGO-4); not unique |
+| | `created_at` | timestamptz | |
+| `credentials` | `id` | text PK | Credential ID, base64url |
+| | `user_id` | text FK → `users.id` | Indexed |
+| | `public_key` | bytea | COSE key as returned by verification |
+| | `algorithm` | integer | COSE algorithm ID |
+| | `counter` | bigint | Sign counter, unsigned 32-bit |
+| | `transports` | text[] | FR-ENC-4 |
+| | `aaguid` | text | Authenticator model, for naming passkeys later |
+| | `backup_eligible`, `backed_up` | boolean | |
+| | `created_at` | timestamptz | |
+| | `last_used_at` | timestamptz NULL | |
+| `sessions` | `token_hash` | text PK | SHA-256 of the cookie token |
+| | `user_id` | text FK → `users.id` | Indexed |
+| | `created_at`, `expires_at`, `last_seen_at` | timestamptz | `expires_at` indexed |
+| | `user_agent` | text NULL | Optional |
+| `challenges` | `challenge` | text PK | base64url |
+| | `seq` | bigint identity | Issue order, for the per-flow cap (BR-CH-7) |
+| | `flow_id` | text | Indexed with `seq` |
+| | `type` | text | `registration` / `authentication` |
+| | `user_id`, `user_name` | text NULL | Pending account (registration) |
+| | `created_at`, `expires_at` | timestamptz | `expires_at` indexed |
+| `rate_limits` | `key` | text PK | Endpoint group and client address (BR-SEC-5) |
+| | `count` | integer | Requests in the current window |
+| | `reset_at` | timestamptz | End of the window; indexed |
+| `schema_migrations` | `version` | integer PK | Applied migrations (BR-DATA-2) |
 
-- **BR-DATA-1** SQLite runs with `foreign_keys=ON` and `journal_mode=WAL`.
-- **BR-DATA-2** Schema changes are numbered SQL migrations applied in order at startup and tracked (e.g. `PRAGMA user_version`).
-- **BR-DATA-3** The database file lives outside the build output (`data/`, gitignored).
+- **BR-DATA-1** The app connects with Neon's *pooled* connection string (host name ending in `-pooler`), which serves many short-lived function instances. That pooler runs in transaction mode, so nothing may depend on session state: no session-level advisory locks, `SET` or `LISTEN`. Every value is a query parameter, never spliced into SQL.
+- **BR-DATA-2** Schema changes are numbered SQL migrations, applied in order when the backend starts and recorded in `schema_migrations`. They run in one transaction under a transaction-level advisory lock, so instances starting together (every cold start on Vercel) wait for each other and a failed migration leaves nothing behind. A database migrated by newer code is refused.
+- **BR-DATA-3** `sslmode=require` in Neon's connection string is sent as `sslmode=verify-full`: what node-postgres already does for `require`, without its deprecation warning. Neon's certificates are publicly trusted.
 - **BR-DATA-4** Every multi-row write is a single transaction; unique-constraint violations are mapped to the error codes in §4, never surfaced as `500`.
 
 ---
@@ -304,10 +291,10 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 - **BR-SEC-2** Every POST and DELETE MUST carry an `Origin` header equal to one of `PASSKEY_ORIGIN`, otherwise → `403 forbidden_origin`. Browsers send `Origin` on all non-GET fetches, including same-origin ones.
 - **BR-SEC-3** CSRF (FR-SEC-6): state changes need JSON POST or DELETE, which a cross-site page cannot send without a CORS preflight; the backend answers no preflight, `SameSite` cookies are not sent cross-site, and BR-SEC-2 checks the origin anyway. The app has no form actions or Server Actions, so no other endpoint accepts form posts.
 - **BR-SEC-4** No CORS headers while the API is same-origin. If the API is ever split off: an exact origin allow-list, `Access-Control-Allow-Credentials: true`, methods `GET, POST, DELETE`, header `Content-Type` — never `*`.
-- **BR-SEC-5** Rate limits per client IP (in memory, fine for one process): options endpoints 30/min, verify endpoints 10/min. There is deliberately no per-username limit: anyone could use it up for someone else's name and stop them from adding a passkey. Excess → `429 rate_limited` with `Retry-After`. A route handler cannot see the connection, so the IP comes from a header (BR-OPS-4).
-- **BR-SEC-6** Account enumeration: only `/registration/options` reveals whether a name exists (inherent to FR-ERR-2), and probing is bounded by its per-IP limit; `/authentication/options` is never user-specific.
+- **BR-SEC-5** Rate limits per client IP: options endpoints 30/min, verify endpoints 10/min. The counts live in the `rate_limits` table, updated with one atomic upsert per request, because on Vercel consecutive requests may reach different function instances. Excess → `429 rate_limited` with `Retry-After`. A route handler cannot see the connection, so the IP comes from a header (BR-OPS-4).
+- **BR-SEC-6** Account enumeration: no endpoint takes a name, and `/authentication/options` is the same for everyone, so nothing reveals which accounts exist.
 - **BR-SEC-7** The server never sees private keys (FR-SEC-4); session tokens are stored only as hashes; no secret is ever returned in a body.
-- **BR-SEC-8** Security events are logged as structured JSON with request ID, user handle, credential ID, IP and user agent: registration, sign-in success and failure (with the failed check), `counter_regression`, `unknown_credential`, sign-out, account deletion, rate limiting. Cookies, tokens, challenges and full credential payloads are never logged.
+- **BR-SEC-8** Security events are logged as structured JSON with request ID, user handle, credential ID, IP and user agent: registration, sign-in success and failure (with the failed check), `counter_regression`, `unknown_credential`, sign-out, rate limiting. Cookies, tokens, challenges and full credential payloads are never logged.
 - **BR-SEC-9** Strict schema validation and size limits (BR-GEN-2) run before any lookup or crypto.
 - **BR-SEC-10** `@simplewebauthn/server` is pinned to a major version and updated for security releases.
 
@@ -315,13 +302,13 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 
 ## 10. Operations
 
-- **BR-OPS-1** Startup order: validate configuration, open the database, run migrations, then accept requests. Any failure stops the process.
-- **BR-OPS-2** Expired challenges (after BR-CH-8's retention) and sessions are deleted at startup and every 10 minutes. A failure during the periodic run is logged and retried at the next run; it must never stop the server.
-- **BR-OPS-3** The SQLite file is backed up with the online backup API or `VACUUM INTO`, never by copying the live file. Losing it orphans every passkey.
-- **BR-OPS-4** Production runs behind a reverse proxy that appends the client address to `X-Forwarded-For`. Next.js fills that header from the connection only when a request has none, so without a proxy a client can choose its own rate-limit key. With several proxies `PASSKEY_XFF_DEPTH` is their number; a proxy that sets another header (e.g. `X-Real-IP`) is used through `PASSKEY_CLIENT_IP_HEADER`. Origin checks do not depend on the proxy: they compare against `PASSKEY_ORIGIN`.
-- **BR-OPS-5** One server process is assumed (SQLite, in-memory rate limits). Scaling out needs a shared rate-limit store and a server database — out of scope.
+- **BR-OPS-1** Startup order: validate configuration, connect to the database, run migrations, then accept requests. A self-hosted server stops on invalid configuration (BR-CONF-1). On Vercel every function instance does this on its cold start; a failure is logged and the next request tries again.
+- **BR-OPS-2** Expired challenges (after BR-CH-8's retention), sessions and rate-limit windows are deleted at most every 10 minutes per instance. There is no timer — a Vercel function only runs while it serves requests — so an API request schedules the cleanup with Next.js's `after()`, which runs it once the response has been sent. A failure is logged and never affects a response.
+- **BR-OPS-3** The database is Neon's: it keeps a restore history for point-in-time recovery, as long as the plan allows. Losing the data orphans every passkey.
+- **BR-OPS-4** The client address comes from `X-Forwarded-For`. On Vercel that header holds the client's address, set by Vercel itself, so the default (the rightmost entry) is right. A self-hosted server runs behind a reverse proxy that appends the client address to it: Next.js fills the header from the connection only when a request has none, so without a proxy a client can choose its own rate-limit key. With several proxies `PASSKEY_XFF_DEPTH` is their number; a proxy that sets another header (e.g. `X-Real-IP`) is used through `PASSKEY_CLIENT_IP_HEADER`. Origin checks do not depend on the proxy: they compare against `PASSKEY_ORIGIN`.
+- **BR-OPS-5** Any number of instances may run at once: all state is in Postgres. Per instance there is only the connection pool and the time of the last cleanup.
 - **BR-OPS-6** The service worker (`public/service-worker.js`) only caches page navigations, `/_next/static/*` and `/favicon/*`; it skips `/api/*` entirely, so API responses are never served from a cache. This MUST stay true.
-- **BR-OPS-7** MAY expose `GET /api/health` returning `200 { "ok": true, "passkeyBackend": "on" | "off" }` after a trivial database query.
+- **BR-OPS-7** `GET /api/health` answers `200 { "ok": true }` after a trivial database query, or `503 { "ok": false }`. Neon suspends an idle database and bills the time it runs, so a monitor calling this every minute keeps it awake.
 
 ---
 
@@ -329,22 +316,20 @@ All times are Unix milliseconds (UTC). Foreign keys cascade on delete.
 
 What the merged frontend relies on; each item is also a requirement above.
 
-- `NEXT_PUBLIC_PASSKEY_API_URL=/api/passkey` is set when building (it is written into the code).
+- The API is at `/api/passkey` on the page's own origin.
 - Requests use `credentials: "include"` and `cache: "no-store"`; POSTs send JSON; GET and DELETE send no body.
 - Verify endpoints and `GET /session` wrap the user as `{ "user": … }`; `GET /session` is always `200` (BR-SES-1).
 - DELETE endpoints answer exactly `204` (BR-SES-5).
 - Errors are `{ code, message }`; unknown codes show a generic message (BR-ERR-2).
 - `user.id` is the WebAuthn user handle (BR-GEN-5); `unknown_credential` triggers the Signal API (BR-ERR-3).
-- "Add a passkey" sends `{ "userName": <account name> }` while signed in (BR-REGO-5).
-- Authentication options are requested often and abandoned often (BR-AUTHO-3, BR-CH-7).
+- Registration options are requested with `{}`; the backend names the account (BR-REGO-4).
 - `NEXT_PUBLIC_PASSKEY_RP_ID` is only needed when the RP ID is not the page's hostname.
 
 ---
 
 ## 12. Frontend Follow-ups (not required for go-live)
 
-- Map `rate_limited`, `invalid_request` and `forbidden_origin` to specific messages, and give `invalid_username` a text that also fits "too long".
-- Restart the autofill request shortly before its challenge expires; today a user who returns to an old tab gets "The request expired" once.
+- Map `invalid_request` and `forbidden_origin` to specific messages.
 - Render the signed-in state on the server (a Server Component reading the session cookie) instead of after hydration.
 - Passkey management UI once the §13 endpoints exist.
 
@@ -353,25 +338,23 @@ What the merged frontend relies on; each item is also a requirement above.
 ## 13. Future Extensions (not part of this contract yet)
 
 - **Passkey management (FR-OPT-1):** `GET /credentials` → `{ "credentials": [{ "id", "name", "createdAt", "lastUsedAt", "backedUp", "transports" }] }`; `PATCH /credentials/:id` `{ "name" }`; `DELETE /credentials/:id`, refusing the last passkey with `409 last_credential`. After a change the frontend calls `signalAllAcceptedCredentials` with the remaining IDs.
-- **Step-up for destructive actions:** `DELETE /account` requires a sign-in within the last 5 minutes, otherwise `403 reauthentication_required`.
+- **Add a passkey / delete the account:** both were removed with usernames. Brought back, adding a passkey needs `excludeCredentials` and a check that the session that asked for the options still owns the challenge; deleting an account needs a recent sign-in (`403 reauthentication_required`) and `signalAllAcceptedCredentials` with an empty list afterwards.
 - **Account recovery / fallback sign-in (FR-OPT-5):** e.g. an email magic link. Without it, a user who loses every passkey loses the account.
 - **Related origins:** `/.well-known/webauthn` if the site ever runs on several domains.
-- **Local-mode accounts are not migrated.** A backend must not trust public keys reported by the browser without a registration ceremony; users register again, and the old local passkeys can be cleaned up with the Signal API.
+- **Accounts from the old in-browser mode are not migrated.** A backend must not trust public keys reported by the browser without a registration ceremony; users register again.
 
 ---
 
 ## 14. Testing
 
-- **BR-TEST-1** Unit tests (Vitest) cover: username and display-name validation; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, rotation, sliding expiry and expiry cleanup; error-to-status mapping; counter logic; the user-handle check.
-- **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` with a temporary database and `NEXT_PUBLIC_PASSKEY_API_URL=/api/passkey`, and cover every flow in FR-TEST-4:
+- **BR-TEST-1** Unit tests (Vitest, on PGlite) cover: configuration, including the Vercel origin and the database URL; migrations; generated names; credential storage round-trips and transaction rollback; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, sliding expiry and expiry cleanup; rate limits, also under concurrency; error-to-status mapping; counter logic.
+- **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` on a throwaway Postgres database named by `E2E_DATABASE_URL`, and cover every flow in FR-TEST-4:
   - register, reload (still signed in), sign out, sign in with the button;
-  - repeat registration on the same device while signed in → `InvalidStateError` message, no duplicate stored;
-  - taken username → message before any prompt, authenticator untouched;
+  - no input fields; signed in, "Sign out" is the only button;
+  - each "Create a passkey" makes a new account with its own generated name;
   - sign in when the authenticator has no passkey → neutral message;
-  - credential deleted from the database → `404 unknown_credential`, and the virtual authenticator loses the passkey through the Signal API;
-  - autofill: request started on load, aborted silently by other ceremonies;
-  - delete account → user, credentials and every session gone; the old cookie no longer works.
-- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; a signed-out session token is rejected server-side; cookie attributes asserted.
+  - credential deleted from the database → `404 unknown_credential`, and the virtual authenticator loses the passkey through the Signal API.
+- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration ignores a client-supplied name; a signed-out session token is rejected server-side; cookie attributes asserted.
 - **BR-TEST-4** Manual checks: Chrome, Safari and Firefox; a platform authenticator and a security key; the real deployed domain (FR-TEST-1, -2, -5).
 
 ---
@@ -380,14 +363,14 @@ What the merged frontend relies on; each item is also a requirement above.
 
 | Frontend requirement | Covered by |
 |---|---|
-| FR-REG-2 fresh registration options | BR-REGO-1…8, §5 |
+| FR-REG-2 fresh registration options | BR-REGO-4…8, §5 |
 | FR-REG-4 verify and store credential | BR-REGV-1…7, §7.1, §8 |
 | FR-AUTH-2 fresh authentication options | BR-AUTHO-1…3, §5 |
 | FR-AUTH-4/5 verify assertion, session | BR-AUTHV-1…7, §6 |
-| FR-COND-2/3 autofill | BR-AUTHO-1 (empty `allowCredentials`), BR-AUTHO-3, BR-CH-7 |
+| FR-COND-2/3 autofill | Not offered: there is no username field (BR-AUTHO-3) |
 | FR-ENC-1 base64url | BR-GEN-4 |
-| FR-ENC-4 transports | BR-REGV-1, BR-REGO-7 (`excludeCredentials`), `credentials.transports` |
-| FR-ERR-2 username taken before `create()` | BR-REGO-4 |
+| FR-ENC-4 transports | BR-REGV-1, `credentials.transports` |
+| FR-ERR-2 username taken before `create()` | Not applicable: no usernames (BR-REGO-4) |
 | FR-SEC-1 secure context | BR-SEC-1, BR-CONF-4 |
 | FR-SEC-2 RP ID per environment | BR-CONF-2, BR-CONF-3 |
 | FR-SEC-3 server challenges | BR-CH-1…9 |
@@ -397,17 +380,17 @@ What the merged frontend relies on; each item is also a requirement above.
 | FR-API-1…4 endpoints | §4 |
 | FR-API-5 error shape | BR-ERR-1…5 |
 | FR-OPT-1 passkey management | §13 (future) |
-| FR-OPT-2 add a passkey | BR-REGO-5, BR-REGV-3 |
+| FR-OPT-2 add a passkey | Not offered (§13) |
 | FR-OPT-3 cross-device | BR-REGO-7 (no `authenticatorAttachment`) |
-| FR-OPT-4 Signal API | BR-ERR-3, BR-GEN-5, BR-ACC-4 |
+| FR-OPT-4 Signal API | BR-ERR-3 |
 | FR-TEST-1…5 | §14 |
 
 ---
 
 ## 16. Definition of Done
 
-- All seven endpoints behave as in §4, with §5–§9 enforced.
-- The merged frontend works in backend mode with no frontend code change.
+- All six endpoints behave as in §4, with §5–§9 enforced.
+- The frontend signs up and signs in against the backend, on Vercel with Neon.
 - BR-TEST-1…3 pass locally; BR-TEST-4 has been done once on the deployed domain.
 - `pnpm check`, `pnpm lint` and `pnpm build` are clean.
 - The README's backend contract, `.env.example` and this document agree; any divergence is fixed in all three.

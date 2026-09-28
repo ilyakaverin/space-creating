@@ -33,12 +33,8 @@ import type { NewSession } from "./sessions";
 import {
 	type ClientData,
 	decodeClientData,
-	isRecord,
-	nameKey,
 	parseAuthenticationResponse,
-	parseDisplayName,
 	parseRegistrationResponse,
-	parseUserName,
 } from "./validation";
 
 /** What a route knows about the request, independent of HTTP details. */
@@ -101,6 +97,19 @@ const MAX_CREDENTIAL_ID_BYTES = 1023;
 
 const randomBytes32 = () => crypto.getRandomValues(new Uint8Array(32));
 
+/** Crockford's base32 alphabet: no I, L, O or U to misread. 256 is a multiple of 32, so unbiased. */
+const NAME_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/**
+ * Sign-up asks for no name, but WebAuthn needs one for the passkey: it is
+ * what the passkey picker lists. A random one such as "Traveller 7K3QX2"
+ * tells two accounts on one device apart. It need not be unique.
+ */
+export const generateUserName = (): string => {
+	const bytes = crypto.getRandomValues(new Uint8Array(6));
+	return `Traveller ${Array.from(bytes, (byte) => NAME_ALPHABET[byte % 32]).join("")}`;
+};
+
 const verificationFailed = (reason: unknown) =>
 	new ApiError(
 		"verification_failed",
@@ -126,67 +135,39 @@ const rejectCrossOrigin = (clientData: ClientData): void => {
 // ---------------------------------------------------------------------------
 
 /**
- * POST /registration/options (BR-REGO). Signed out it prepares a new
- * account; signed in it adds a passkey to the current one (FR-OPT-2).
+ * POST /registration/options (BR-REGO). Every registration creates a new
+ * account: its user handle and name are generated here and only kept with
+ * the challenge until the passkey is verified (BR-REGO-4).
  */
 export const startRegistration = async (
-	{ accounts, challenges, config, limiter }: PasskeyBackend,
+	{ challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
-	body: unknown,
 ): Promise<PublicKeyCredentialCreationOptionsJSON> => {
-	limiter.consume(`options:${context.clientAddress()}`, RATE_LIMITS.options);
-	if (!isRecord(body)) {
-		throw new ApiError(
-			"invalid_request",
-			"Expected { userName, displayName? }.",
-		);
-	}
-	const userName = parseUserName(body.userName);
-
-	let user: User;
-	if (context.user) {
-		// Adding a passkey: the options are always for the signed-in account (BR-REGO-5).
-		if (nameKey(context.user.name) !== userName.key) {
-			throw new ApiError(
-				"invalid_username",
-				"While signed in, passkeys can only be added to your own account.",
-			);
-		}
-		user = context.user;
-	} else {
-		// A new account. A taken name is refused now, before any
-		// authenticator prompt opens (FR-ERR-2, BR-REGO-4).
-		if (accounts.findUserByName(userName.name)) {
-			throw new ApiError(
-				"username_taken",
-				`${userName.name} is already registered.`,
-			);
-		}
-		user = {
-			// The user handle is random, never derived from the name (BR-REGO-6).
-			id: isoBase64URL.fromBuffer(randomBytes32()),
-			name: userName.name,
-			displayName: parseDisplayName(body.displayName, userName.name),
-		};
-	}
+	await limiter.consume(
+		`options:${context.clientAddress()}`,
+		RATE_LIMITS.options,
+	);
+	const user: User = {
+		// The user handle is random: it must not identify the person (BR-REGO-6).
+		id: isoBase64URL.fromBuffer(randomBytes32()),
+		name: generateUserName(),
+	};
 
 	const options = await generateRegistrationOptions({
 		rpName: config.rpName,
 		rpID: config.rpId,
 		userID: isoBase64URL.toBuffer(user.id),
 		userName: user.name,
-		userDisplayName: user.displayName,
+		userDisplayName: user.name,
 		// Bytes, not a string: the library would UTF-8-encode a string first.
 		challenge: randomBytes32(),
 		timeout: CEREMONY_TIMEOUT_MS,
 		attestationType: "none",
-		// An authenticator that already holds one of these refuses with
-		// InvalidStateError instead of creating a duplicate passkey.
-		excludeCredentials: accounts.listCredentials(user.id),
-		// Discoverable passkeys ("resident keys") are what sign-in without a
-		// username and autofill need. No authenticatorAttachment, so phones and
-		// security keys stay possible (FR-OPT-3). A fresh object each time: the
-		// library modifies it.
+		// No excludeCredentials: the account is new, so it has no passkeys yet.
+		// Discoverable passkeys ("resident keys") store the user handle on the
+		// authenticator, which is what lets sign-in work without a username.
+		// No authenticatorAttachment, so phones and security keys stay possible
+		// (FR-OPT-3). A fresh object each time: the library modifies it.
 		authenticatorSelection: {
 			residentKey: "required",
 			userVerification: "preferred",
@@ -194,47 +175,37 @@ export const startRegistration = async (
 		supportedAlgorithmIDs: ALLOWED_ALGORITHMS,
 	});
 
-	challenges.issue({
+	await challenges.issue({
 		challenge: options.challenge,
 		flowId: context.flowId,
 		type: "registration",
-		// A new account only exists in the challenge until verification succeeds.
-		pendingUser: context.user ? null : user,
-		sessionUserId: context.user?.id ?? null,
+		pendingUser: user,
 	});
 	return options;
 };
 
 /** POST /registration/verify (BR-REGV). Stores the passkey and signs its user in. */
 export const finishRegistration = async (
-	{ accounts, challenges, config, db, limiter, log, sessions }: PasskeyBackend,
+	{ challenges, config, limiter, log, transaction }: PasskeyBackend,
 	context: RequestContext,
 	body: unknown,
 ): Promise<SignedIn> => {
-	limiter.consume(`verify:${context.clientAddress()}`, RATE_LIMITS.verify);
+	await limiter.consume(
+		`verify:${context.clientAddress()}`,
+		RATE_LIMITS.verify,
+	);
 	const response = parseRegistrationResponse(body);
 	const clientData = decodeClientData(response.response.clientDataJSON);
 
 	// Used up first, before any other check: a replay or a failed attempt can never reuse it.
-	const challenge = challenges.redeem({
+	const challenge = await challenges.redeem({
 		challenge: clientData.challenge,
 		flowId: context.flowId,
 		type: "registration",
 	});
 	rejectCrossOrigin(clientData);
 
-	// Adding a passkey: the session that asked for the options must still be
-	// the one signed in (BR-REGV-3).
-	let user: User | null = challenge.pendingUser;
-	if (challenge.sessionUserId) {
-		if (context.user?.id !== challenge.sessionUserId) {
-			throw new ApiError(
-				"not_signed_in",
-				"The session that started this registration has ended.",
-			);
-		}
-		user = context.user;
-	}
+	const user = challenge.pendingUser;
 	if (!user) {
 		throw new ApiError(
 			"verification_failed",
@@ -290,15 +261,11 @@ export const finishRegistration = async (
 	}
 
 	// All-or-nothing: account, passkey and session appear together or not at all.
-	const newAccount = !challenge.sessionUserId;
-	const signedInUser = user;
-	const session = db.transaction(() => {
-		if (newAccount) {
-			accounts.createUser(signedInUser);
-		}
-		accounts.addCredential({
+	const session = await transaction(async ({ accounts, sessions }) => {
+		await accounts.createUser(user);
+		await accounts.addCredential({
 			id: info.credential.id,
-			userId: signedInUser.id,
+			userId: user.id,
 			publicKey: info.credential.publicKey,
 			algorithm,
 			counter: info.credential.counter,
@@ -309,19 +276,18 @@ export const finishRegistration = async (
 		});
 		// A new session on every sign-in; the old one is dropped (BR-COOK-4).
 		if (context.sessionTokenHash) {
-			sessions.revoke(context.sessionTokenHash);
+			await sessions.revoke(context.sessionTokenHash);
 		}
-		return sessions.create(signedInUser.id, context.userAgent);
-	})();
+		return sessions.create(user.id, context.userAgent);
+	});
 
 	log("registration", {
 		...requestFields(context),
-		userId: signedInUser.id,
+		userId: user.id,
 		credentialId: info.credential.id,
-		newAccount,
 		userVerified: info.userVerified,
 	});
-	return { user: signedInUser, session };
+	return { user, session };
 };
 
 // ---------------------------------------------------------------------------
@@ -333,17 +299,20 @@ export const startAuthentication = async (
 	{ challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
 ): Promise<PublicKeyCredentialRequestOptionsJSON> => {
-	limiter.consume(`options:${context.clientAddress()}`, RATE_LIMITS.options);
+	await limiter.consume(
+		`options:${context.clientAddress()}`,
+		RATE_LIMITS.options,
+	);
 	const options = await generateAuthenticationOptions({
 		rpID: config.rpId,
 		challenge: randomBytes32(),
 		timeout: CEREMONY_TIMEOUT_MS,
 		userVerification: "preferred",
-		// Empty: any discoverable passkey for this site may answer, which both
-		// the sign-in button and username autofill rely on.
+		// Empty: any discoverable passkey for this site may answer, so the
+		// user needs no username to sign in.
 		allowCredentials: [],
 	});
-	challenges.issue({
+	await challenges.issue({
 		challenge: options.challenge,
 		flowId: context.flowId,
 		type: "authentication",
@@ -353,15 +322,18 @@ export const startAuthentication = async (
 
 /** POST /authentication/verify (BR-AUTHV). Checks the assertion and signs its user in. */
 export const finishAuthentication = async (
-	{ accounts, challenges, config, db, limiter, log, sessions }: PasskeyBackend,
+	{ accounts, challenges, config, limiter, log, transaction }: PasskeyBackend,
 	context: RequestContext,
 	body: unknown,
 ): Promise<SignedIn> => {
-	limiter.consume(`verify:${context.clientAddress()}`, RATE_LIMITS.verify);
+	await limiter.consume(
+		`verify:${context.clientAddress()}`,
+		RATE_LIMITS.verify,
+	);
 	const response = parseAuthenticationResponse(body);
 	const clientData = decodeClientData(response.response.clientDataJSON);
 	// Used up first, before any other check: a replay or a failed attempt can never reuse it.
-	challenges.redeem({
+	await challenges.redeem({
 		challenge: clientData.challenge,
 		flowId: context.flowId,
 		type: "authentication",
@@ -370,8 +342,8 @@ export const finishAuthentication = async (
 
 	// Only here may unknown_credential be answered: the frontend then asks the
 	// password manager to hide this passkey (BR-ERR-3).
-	const stored = accounts.findCredential(response.id);
-	const owner = stored ? accounts.findUser(stored.userId) : null;
+	const stored = await accounts.findCredential(response.id);
+	const owner = stored ? await accounts.findUser(stored.userId) : null;
 	if (!stored || !owner) {
 		log("unknown_credential", {
 			...requestFields(context),
@@ -422,8 +394,8 @@ export const finishAuthentication = async (
 		throw verificationFailed("The backup-eligible flag changed.");
 	}
 
-	const session = db.transaction(() => {
-		const counterAdvanced = accounts.recordSignIn(stored.id, {
+	const session = await transaction(async ({ accounts, sessions }) => {
+		const counterAdvanced = await accounts.recordSignIn(stored.id, {
 			counter: info.newCounter,
 			backedUp: info.credentialBackedUp,
 		});
@@ -439,10 +411,10 @@ export const finishAuthentication = async (
 			throw verificationFailed("The signature counter did not increase.");
 		}
 		if (context.sessionTokenHash) {
-			sessions.revoke(context.sessionTokenHash);
+			await sessions.revoke(context.sessionTokenHash);
 		}
 		return sessions.create(owner.id, context.userAgent);
-	})();
+	});
 
 	log("sign_in", {
 		...requestFields(context),
@@ -454,34 +426,16 @@ export const finishAuthentication = async (
 };
 
 // ---------------------------------------------------------------------------
-// Session and account
+// Session
 // ---------------------------------------------------------------------------
 
 /** DELETE /session (BR-SES-4). Idempotent: signing out twice is fine. */
-export const signOut = (
+export const signOut = async (
 	{ log, sessions }: PasskeyBackend,
 	context: RequestContext,
-): void => {
+): Promise<void> => {
 	if (context.sessionTokenHash) {
-		sessions.revoke(context.sessionTokenHash);
+		await sessions.revoke(context.sessionTokenHash);
 		log("sign_out", { ...requestFields(context), userId: context.user?.id });
 	}
-};
-
-/**
- * DELETE /account (BR-ACC). Deleting the user row cascades to their
- * passkeys, every session on every device and pending challenges.
- */
-export const deleteAccount = (
-	{ accounts, log }: PasskeyBackend,
-	context: RequestContext,
-): void => {
-	if (!context.user) {
-		throw new ApiError("not_signed_in", "Sign in to delete your account.");
-	}
-	accounts.deleteUser(context.user.id);
-	log("account_deleted", {
-		...requestFields(context),
-		userId: context.user.id,
-	});
 };

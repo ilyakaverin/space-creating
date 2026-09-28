@@ -4,9 +4,7 @@ import { ApiError } from "./errors";
 import {
 	decodeClientData,
 	parseAuthenticationResponse,
-	parseDisplayName,
 	parseRegistrationResponse,
-	parseUserName,
 } from "./validation";
 
 const codeOf = (run: () => unknown): string | undefined => {
@@ -17,43 +15,6 @@ const codeOf = (run: () => unknown): string | undefined => {
 	}
 	return undefined;
 };
-
-describe("parseUserName", () => {
-	it("trims, NFC-normalizes and lower-cases the comparison key", () => {
-		// "é" typed as e + combining accent becomes the single code point.
-		expect(parseUserName("  René  ")).toEqual({
-			name: "René",
-			key: "rené",
-		});
-	});
-
-	it("rejects empty, non-string, too long and control-character names", () => {
-		expect(codeOf(() => parseUserName("   "))).toBe("invalid_username");
-		expect(codeOf(() => parseUserName(42))).toBe("invalid_username");
-		expect(codeOf(() => parseUserName("a".repeat(65)))).toBe(
-			"invalid_username",
-		);
-		// 22 three-byte characters = 66 bytes, over the 64-byte limit.
-		expect(codeOf(() => parseUserName("日".repeat(22)))).toBe(
-			"invalid_username",
-		);
-		expect(codeOf(() => parseUserName("bob\u0007"))).toBe("invalid_username");
-		expect(parseUserName("a".repeat(64)).name).toHaveLength(64);
-	});
-});
-
-describe("parseDisplayName", () => {
-	it("falls back to the username when missing or blank", () => {
-		expect(parseDisplayName(undefined, "alice")).toBe("alice");
-		expect(parseDisplayName("   ", "alice")).toBe("alice");
-		expect(parseDisplayName(" Alice A. ", "alice")).toBe("Alice A.");
-	});
-
-	it("rejects wrong types and control characters", () => {
-		expect(codeOf(() => parseDisplayName(1, "a"))).toBe("invalid_request");
-		expect(codeOf(() => parseDisplayName("a\nb", "a"))).toBe("invalid_request");
-	});
-});
 
 const registration = {
 	id: "Y3JlZC1pZA",

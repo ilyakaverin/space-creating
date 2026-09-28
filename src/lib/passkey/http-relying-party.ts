@@ -1,13 +1,14 @@
 /**
- * A relying party on a backend, reached with the JSON contract described in the
- * README. The backend issues single-use challenges, verifies credentials and
- * keeps the session in an httpOnly cookie, so this side never holds a secret.
+ * The relying party on the backend, reached with the JSON contract described
+ * in docs/passkey-backend-requirements.md. The backend issues single-use
+ * challenges, verifies credentials and keeps the session in an httpOnly
+ * cookie, so this side never holds a secret.
  */
 import { PasskeyError } from "./errors";
 import type { RelyingParty, User } from "./types";
 
 export interface HttpRelyingPartyOptions {
-	/** Where the passkey API lives, e.g. "/api/passkey" or "https://auth.example.com/passkey". */
+	/** Where the passkey API lives, e.g. "/api/passkey". */
 	baseUrl: string;
 	/** The backend's RP ID; only used for Signal API calls. Defaults to this page's hostname. */
 	rpId?: string;
@@ -78,8 +79,7 @@ export const createHttpRelyingParty = ({
 
 	return {
 		rpId,
-		registrationOptions: (input) =>
-			request("POST", "/registration/options", input),
+		registrationOptions: () => request("POST", "/registration/options", {}),
 		verifyRegistration: (credential) =>
 			userFrom(request("POST", "/registration/verify", credential)),
 		authenticationOptions: () => request("POST", "/authentication/options", {}),
@@ -88,6 +88,5 @@ export const createHttpRelyingParty = ({
 		currentUser: async () =>
 			(await request<{ user: User | null }>("GET", "/session")).user,
 		signOut: () => request("DELETE", "/session"),
-		deleteAccount: () => request("DELETE", "/account"),
 	};
 };

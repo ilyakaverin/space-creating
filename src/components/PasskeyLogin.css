@@ -3,26 +3,47 @@
  * written: the end-to-end tests select `section.passkey` and `p.message`.
  * Every rule is scoped under .passkey instead.
  */
-.passkey,
-.passkey form {
+.passkey {
 	display: flex;
 	flex-direction: column;
-	align-items: center;
 	gap: 0.75rem;
-}
-
-.passkey {
+	width: min(100%, 40ch);
 	margin-block-start: 1.5rem;
-	max-width: 40ch;
 	text-align: center;
 }
 
-.passkey label {
+/*
+ * The site's button: a light outline on the black page, in the page's
+ * pixel font, faded in when it appears. Hovering fills it in.
+ */
+.passkey button {
 	display: flex;
-	flex-direction: column;
-	gap: 0.25rem;
-	color: var(--gray);
-	font-size: 0.875rem;
+	justify-content: center;
+	gap: 5px;
+	padding: 15px;
+	border: 2px solid var(--light);
+	border-radius: 5px;
+	background: none;
+	color: var(--light);
+	font: inherit;
+	cursor: pointer;
+	animation: passkey-fade-in 0.5s;
+	transition: background-color 0.15s, color 0.15s;
+}
+
+.passkey button:hover:not(:disabled) {
+	background-color: var(--light);
+	color: var(--black);
+}
+
+.passkey button:focus-visible {
+	outline: 2px solid var(--orange);
+	outline-offset: 3px;
+}
+
+.passkey button:disabled {
+	opacity: 50%;
+	cursor: default;
 }
 
 .passkey .message {
@@ -36,4 +57,18 @@
 
 .passkey .error {
 	color: var(--orange);
+}
+
+/* No `to`: the fade ends at the button's own opacity, 50% while disabled. */
+@keyframes passkey-fade-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.passkey button {
+		animation: none;
+		transition: none;
+	}
 }

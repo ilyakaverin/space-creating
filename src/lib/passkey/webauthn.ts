@@ -12,7 +12,6 @@ import type {
 /** Newer statics are missing in many browsers, so each one is optional at runtime. */
 interface PublicKeyCredentialStatics {
 	isUserVerifyingPlatformAuthenticatorAvailable?(): Promise<boolean>;
-	isConditionalMediationAvailable?(): Promise<boolean>;
 	getClientCapabilities?(): Promise<Record<string, boolean>>;
 	parseCreationOptionsFromJSON?(
 		options: PublicKeyCredentialCreationOptionsJSON,
@@ -23,11 +22,6 @@ interface PublicKeyCredentialStatics {
 	signalUnknownCredential?(options: {
 		rpId: string;
 		credentialId: string;
-	}): Promise<void>;
-	signalAllAcceptedCredentials?(options: {
-		rpId: string;
-		userId: string;
-		allAcceptedCredentialIds: string[];
 	}): Promise<void>;
 }
 
@@ -52,20 +46,13 @@ export interface Capabilities {
 	webauthn: boolean;
 	/** A built-in authenticator such as Touch ID, Windows Hello or an Android screen lock. */
 	platformAuthenticator: boolean;
-	/** Passkeys can be offered in the username field's autofill. */
-	conditionalMediation: boolean;
 }
 
 export const detectCapabilities = async (): Promise<Capabilities> => {
 	const credential = statics();
 	const secureContext = window.isSecureContext;
 	if (!credential || !("credentials" in navigator)) {
-		return {
-			secureContext,
-			webauthn: false,
-			platformAuthenticator: false,
-			conditionalMediation: false,
-		};
+		return { secureContext, webauthn: false, platformAuthenticator: false };
 	}
 	const client = await attempt(() => credential.getClientCapabilities?.());
 	const platformAuthenticator =
@@ -74,16 +61,7 @@ export const detectCapabilities = async (): Promise<Capabilities> => {
 			credential.isUserVerifyingPlatformAuthenticatorAvailable?.(),
 		)) ??
 		false;
-	const conditionalMediation =
-		client?.conditionalGet ??
-		(await attempt(() => credential.isConditionalMediationAvailable?.())) ??
-		false;
-	return {
-		secureContext,
-		webauthn: true,
-		platformAuthenticator,
-		conditionalMediation,
-	};
+	return { secureContext, webauthn: true, platformAuthenticator };
 };
 
 const toDescriptor = (
@@ -200,7 +178,7 @@ export const abortPendingRequest = (): void => {
 	pendingRequest = null;
 };
 
-/** Browsers allow one pending WebAuthn request, so each new one cancels the last — usually the autofill request. */
+/** Browsers allow one pending WebAuthn request, so each new one cancels the last. */
 const nextSignal = (): AbortSignal => {
 	abortPendingRequest();
 	pendingRequest = new AbortController();
@@ -228,19 +206,13 @@ export const createPasskey = async (
 	return registrationToJSON(credential as PublicKeyCredential);
 };
 
-/**
- * With `mediation: "conditional"` the request waits, without a prompt, until the
- * user picks a passkey from the username autofill; otherwise it opens the modal
- * prompt and needs user activation like `createPasskey`.
- */
+/** Opens the browser's passkey picker; like `createPasskey`, call it from a click handler. */
 export const getPasskey = async (
 	options: PublicKeyCredentialRequestOptionsJSON,
-	mediation?: CredentialMediationRequirement,
 ): Promise<AuthenticationResponseJSON> => {
 	const publicKey = parseRequestOptions(options);
 	const credential = await navigator.credentials.get({
 		publicKey,
-		mediation,
 		signal: nextSignal(),
 	});
 	if (!credential) {
@@ -256,19 +228,5 @@ export const signalUnknownCredential = async (
 ): Promise<void> => {
 	await attempt(() =>
 		statics()?.signalUnknownCredential?.({ rpId, credentialId }),
-	);
-};
-
-/** Tells the password manager none of the user's passkeys are accepted any more. */
-export const signalNoAcceptedCredentials = async (
-	rpId: string,
-	userId: string,
-): Promise<void> => {
-	await attempt(() =>
-		statics()?.signalAllAcceptedCredentials?.({
-			rpId,
-			userId,
-			allAcceptedCredentialIds: [],
-		}),
 	);
 };

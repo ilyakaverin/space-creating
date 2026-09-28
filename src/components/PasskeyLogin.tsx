@@ -1,7 +1,10 @@
 /**
- * Passkey sign-in and registration. The WebAuthn calls and the relying party
- * (in this browser or on the backend) live in src/lib/passkey; this
- * component only holds the UI state.
+ * Passkey sign-up and sign-in. The WebAuthn calls and the backend client
+ * live in src/lib/passkey; this component only holds the UI state.
+ *
+ * There is no form: creating a passkey creates an account whose name the
+ * backend generates, and signing in lets the browser offer every passkey
+ * this site has on the device.
  */
 "use client";
 
@@ -18,14 +21,12 @@ import {
 	describeError,
 	detectCapabilities,
 	getPasskey,
-	logError,
-	signalNoAcceptedCredentials,
 	signalUnknownCredential,
 } from "@/lib/passkey";
-import { type FormEvent, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import "./PasskeyLogin.css";
 
-/** `pending`: the browser prompt is open. `verifying`: the relying party checks the result. */
+/** `pending`: the browser prompt is open. `verifying`: the backend checks the result. */
 type Status =
 	| "loading"
 	| "idle"
@@ -34,220 +35,97 @@ type Status =
 	| "success"
 	| "error";
 
+interface Feedback {
+	status: Status;
+	message: string;
+}
+
 const isBusy = (status: Status): boolean =>
 	status === "loading" || status === "pending" || status === "verifying";
 
+/** An AbortError means our own code cancelled the request, so it stays silent. */
+const failure = (cause: unknown, ceremony: Ceremony): Feedback => {
+	const text = describeError(cause, ceremony);
+	return text === null
+		? { status: "idle", message: "" }
+		: { status: "error", message: text };
+};
+
 export function PasskeyLogin() {
 	const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
-	const [user, setUserState] = useState<User | null>(null);
-	const [status, setStatusState] = useState<Status>("loading");
-	const [message, setMessage] = useState("");
-	const [userName, setUserName] = useState("");
-	const [displayName, setDisplayName] = useState("");
-
-	/**
-	 * A ceremony runs across several awaits and must act on the state as it
-	 * is by then, not as it was in the render that started it. So the async
-	 * code below reads these mirrors, which are written together with the
-	 * state. The relying party is browser-only and created after hydration.
-	 */
-	const live = useRef({
-		relyingParty: null as RelyingParty | null,
-		capabilities: null as Capabilities | null,
-		user: null as User | null,
-		status: "loading" as Status,
-		autofillPending: false,
+	const [user, setUser] = useState<User | null>(null);
+	const [feedback, setFeedback] = useState<Feedback>({
+		status: "loading",
+		message: "",
 	});
+	/** Talks to the backend; browser-only, so created after hydration. */
+	const relyingParty = useRef<RelyingParty | null>(null);
 
-	const setUser = (next: User | null) => {
-		live.current.user = next;
-		setUserState(next);
-	};
-
-	const setStatus = (next: Status) => {
-		live.current.status = next;
-		setStatusState(next);
-	};
-
-	const succeed = (text: string) => {
-		setStatus("success");
-		setMessage(text);
-	};
-
-	/** An AbortError means our own code cancelled the request, so it stays silent. */
-	const fail = (cause: unknown, ceremony: Ceremony) => {
-		const text = describeError(cause, ceremony);
-		setStatus(text === null ? "idle" : "error");
-		setMessage(text ?? "");
-	};
-
-	const verifySignIn = async (credential: AuthenticationResponseJSON) => {
-		const { relyingParty } = live.current;
-		if (!relyingParty) {
+	const createAccount = async () => {
+		const backend = relyingParty.current;
+		if (!backend) {
 			return;
 		}
-		setStatus("verifying");
+		setFeedback({ status: "pending", message: "" });
 		try {
-			setUser(await relyingParty.verifyAuthentication(credential));
-			succeed("Signed in with your passkey.");
+			const credential = await createPasskey(
+				await backend.registrationOptions(),
+			);
+			setFeedback({ status: "verifying", message: "" });
+			setUser(await backend.verifyRegistration(credential));
+			setFeedback({
+				status: "success",
+				message: "Passkey created — you're signed in.",
+			});
 		} catch (cause) {
-			if (
-				cause instanceof PasskeyError &&
-				cause.code === "unknown_credential"
-			) {
-				void signalUnknownCredential(relyingParty.rpId, credential.id);
-			}
-			fail(cause, "authentication");
+			setFeedback(failure(cause, "registration"));
 		}
-	};
-
-	/**
-	 * Keeps a conditional request pending so the browser offers passkeys in the
-	 * username autofill. Any modal ceremony aborts it; it restarts once that ends.
-	 */
-	const startAutofill = async () => {
-		const state = live.current;
-		if (
-			!state.relyingParty ||
-			!state.capabilities?.conditionalMediation ||
-			state.user ||
-			state.autofillPending
-		) {
-			return;
-		}
-		state.autofillPending = true;
-		let credential: AuthenticationResponseJSON;
-		try {
-			const options = await state.relyingParty.authenticationOptions();
-			// A modal ceremony may have started while the options were on their way.
-			if (isBusy(state.status) || state.user) {
-				state.autofillPending = false;
-				return;
-			}
-			credential = await getPasskey(options, "conditional");
-		} catch (cause) {
-			// Nothing to show: either a modal ceremony replaced this request, or the
-			// browser settled it before the user picked a passkey. The buttons still
-			// work, and focusing the username field starts a new request.
-			state.autofillPending = false;
-			logError(cause, "authentication");
-			return;
-		}
-		state.autofillPending = false;
-		await verifySignIn(credential);
-		void startAutofill();
 	};
 
 	const signIn = async () => {
-		const { relyingParty } = live.current;
-		if (!relyingParty) {
+		const backend = relyingParty.current;
+		if (!backend) {
 			return;
 		}
-		setStatus("pending");
-		setMessage("");
+		setFeedback({ status: "pending", message: "" });
+		let credential: AuthenticationResponseJSON | null = null;
 		try {
-			const options = await relyingParty.authenticationOptions();
-			await verifySignIn(await getPasskey(options));
+			credential = await getPasskey(await backend.authenticationOptions());
+			setFeedback({ status: "verifying", message: "" });
+			setUser(await backend.verifyAuthentication(credential));
+			setFeedback({
+				status: "success",
+				message: "Signed in with your passkey.",
+			});
 		} catch (cause) {
-			fail(cause, "authentication");
-		}
-		void startAutofill();
-	};
-
-	const register = async (input: {
-		userName: string;
-		displayName?: string;
-	}) => {
-		const { relyingParty } = live.current;
-		if (!relyingParty) {
-			return;
-		}
-		const adding = live.current.user !== null;
-		setStatus("pending");
-		setMessage("");
-		try {
-			// Rejects a taken username before any authenticator prompt opens.
-			const options = await relyingParty.registrationOptions(input);
-			const credential = await createPasskey(options);
-			setStatus("verifying");
-			setUser(await relyingParty.verifyRegistration(credential));
-			succeed(
-				adding
-					? "Another passkey was added to your account."
-					: "Passkey created — you're signed in.",
-			);
-			setUserName("");
-			setDisplayName("");
-		} catch (cause) {
-			fail(cause, "registration");
-		}
-		void startAutofill();
-	};
-
-	const handleCreate = (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		const name = userName.trim();
-		if (!name) {
-			fail(
-				new PasskeyError("invalid_username", "Empty username."),
-				"registration",
-			);
-			return;
-		}
-		void register({
-			userName: name,
-			displayName: displayName.trim() || undefined,
-		});
-	};
-
-	const handleAddPasskey = () => {
-		const account = live.current.user;
-		if (account) {
-			void register({ userName: account.name });
+			// The passkey belongs to no account here (any more): let the password
+			// manager hide it, so it is not offered again.
+			if (
+				credential &&
+				cause instanceof PasskeyError &&
+				cause.code === "unknown_credential"
+			) {
+				void signalUnknownCredential(backend.rpId, credential.id);
+			}
+			setFeedback(failure(cause, "authentication"));
 		}
 	};
 
-	const handleSignOut = async () => {
-		const { relyingParty } = live.current;
-		if (!relyingParty) {
+	const signOut = async () => {
+		const backend = relyingParty.current;
+		if (!backend) {
 			return;
 		}
 		try {
-			await relyingParty.signOut();
+			await backend.signOut();
 			setUser(null);
-			setStatus("idle");
-			setMessage("");
+			setFeedback({ status: "idle", message: "" });
 		} catch (cause) {
-			fail(cause, "session");
+			setFeedback(failure(cause, "session"));
 		}
-		void startAutofill();
-	};
-
-	const handleDeleteAccount = async () => {
-		const { relyingParty, user: account } = live.current;
-		if (
-			!relyingParty ||
-			!account ||
-			!window.confirm(`Delete ${account.name} and its passkeys from this site?`)
-		) {
-			return;
-		}
-		try {
-			await relyingParty.deleteAccount();
-			void signalNoAcceptedCredentials(relyingParty.rpId, account.id);
-			setUser(null);
-			succeed(
-				"Account deleted. If your password manager still lists its passkey, remove it there.",
-			);
-		} catch (cause) {
-			fail(cause, "session");
-		}
-		void startAutofill();
 	};
 
 	// Runs once after hydration: everything it touches exists only in the browser.
-	// The functions it calls read `live`, so they need not be dependencies.
-	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-only effect, see above
 	useEffect(() => {
 		// React may mount twice in development; the abandoned run stops at its next await.
 		let active = true;
@@ -256,28 +134,24 @@ export function PasskeyLogin() {
 			if (!active) {
 				return;
 			}
-			live.current.capabilities = detected;
 			setCapabilities(detected);
 			if (!detected.webauthn) {
-				setStatus("idle");
+				setFeedback({ status: "idle", message: "" });
 				return;
 			}
-			const relyingParty = createRelyingParty();
-			live.current.relyingParty = relyingParty;
+			const backend = createRelyingParty();
+			relyingParty.current = backend;
 			try {
-				const current = await relyingParty.currentUser();
-				if (!active) {
-					return;
+				const current = await backend.currentUser();
+				if (active) {
+					setUser(current);
+					setFeedback({ status: "idle", message: "" });
 				}
-				setUser(current);
-				setStatus("idle");
 			} catch (cause) {
-				if (!active) {
-					return;
+				if (active) {
+					setFeedback(failure(cause, "session"));
 				}
-				fail(cause, "session");
 			}
-			void startAutofill();
 		})();
 		return () => {
 			active = false;
@@ -285,6 +159,7 @@ export function PasskeyLogin() {
 		};
 	}, []);
 
+	const { status, message } = feedback;
 	const busy = isBusy(status);
 
 	return (
@@ -297,52 +172,19 @@ export function PasskeyLogin() {
 				</p>
 			) : user ? (
 				<>
-					<p className="message">
-						Signed in as {user.displayName}
-						{user.displayName === user.name ? "" : ` (${user.name})`}
-					</p>
-					<button type="button" onClick={handleAddPasskey} disabled={busy}>
-						Add a passkey
-					</button>
-					<button type="button" onClick={handleSignOut} disabled={busy}>
+					<p className="message">Signed in as {user.name}</p>
+					<button type="button" onClick={signOut} disabled={busy}>
 						Sign out
-					</button>
-					<button type="button" onClick={handleDeleteAccount} disabled={busy}>
-						Delete account
 					</button>
 				</>
 			) : (
 				<>
-					<form onSubmit={handleCreate}>
-						<label>
-							Username
-							<input
-								name="username"
-								autoComplete="username webauthn"
-								autoCapitalize="none"
-								spellCheck={false}
-								required
-								value={userName}
-								onChange={(event) => setUserName(event.target.value)}
-								onFocus={() => void startAutofill()}
-							/>
-						</label>
-						<label>
-							Display name (optional)
-							<input
-								name="display-name"
-								autoComplete="name"
-								value={displayName}
-								onChange={(event) => setDisplayName(event.target.value)}
-							/>
-						</label>
-						<button type="submit" disabled={busy}>
-							Create a passkey
-						</button>
-						<button type="button" onClick={signIn} disabled={busy}>
-							Sign in with a passkey
-						</button>
-					</form>
+					<button type="button" onClick={createAccount} disabled={busy}>
+						Create a passkey
+					</button>
+					<button type="button" onClick={signIn} disabled={busy}>
+						Sign in with a passkey
+					</button>
 					{capabilities?.webauthn && !capabilities.platformAuthenticator && (
 						<p className="message">
 							No built-in authenticator found — you can still use a phone or a

@@ -14,7 +14,7 @@ export const GET = passkeyEndpoint(async ({ context }) =>
 
 /** Sign out: the session row is deleted server-side, not just the cookie. */
 export const DELETE = passkeyEndpoint(async ({ cookies, backend, context }) => {
-	signOut(backend, context);
+	await signOut(backend, context);
 	clearSessionCookie(cookies, backend.config);
 	return noContent();
 });

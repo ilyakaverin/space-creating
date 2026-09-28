@@ -28,9 +28,10 @@ next-env.d.ts
 *.sln
 *.sw?
 
-# Passkey backend: local settings and the SQLite database
+# Local settings (.env.local, which `vercel env pull` writes, is covered by *.local)
 .env
-data/
+# `vercel link`
+.vercel
 
 # Playwright
 test-results/

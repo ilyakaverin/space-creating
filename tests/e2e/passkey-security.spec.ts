@@ -6,13 +6,12 @@
 import { request } from "@playwright/test";
 import { BASE_URL } from "../../playwright.config";
 import {
+	GENERATED_NAME,
 	SESSION_COOKIE,
 	apiClient,
 	expect,
 	openApp,
-	queryDb,
 	test,
-	uniqueName,
 } from "./fixtures";
 
 const VERIFY = "/authentication/verify";
@@ -26,7 +25,7 @@ const tamper = (value: string): string => {
 
 test("a replayed assertion is rejected", async ({ app }) => {
 	await app.goto();
-	await app.createAccount(uniqueName());
+	await app.createAccount();
 	await app.click("Sign out");
 
 	const assertion = await app.freshAssertion();
@@ -41,7 +40,7 @@ test("an assertion is only accepted from the browser that asked for its challeng
 	browser,
 }) => {
 	await app.goto();
-	await app.createAccount(uniqueName());
+	await app.createAccount();
 	await app.click("Sign out");
 	const assertion = await app.freshAssertion();
 
@@ -58,7 +57,7 @@ test("an assertion is only accepted from the browser that asked for its challeng
 
 test("a tampered signature is rejected", async ({ app }) => {
 	await app.goto();
-	await app.createAccount(uniqueName());
+	await app.createAccount();
 	await app.click("Sign out");
 
 	const assertion = await app.freshAssertion();
@@ -76,19 +75,15 @@ test("an assertion claiming another account's user handle is rejected", async ({
 }) => {
 	const other = await openApp(browser);
 	await other.goto();
-	const otherName = uniqueName();
-	await other.createAccount(otherName);
+	await other.createAccount();
+	const otherUser = await other.currentUser();
 	await other.context.close();
-	const [otherUser] = queryDb<{ id: string }>(
-		"SELECT id FROM users WHERE name = ?",
-		otherName,
-	);
 
 	await app.goto();
-	await app.createAccount(uniqueName());
+	await app.createAccount();
 	await app.click("Sign out");
 	const assertion = await app.freshAssertion();
-	assertion.response.userHandle = otherUser.id;
+	assertion.response.userHandle = otherUser?.id;
 	const result = await app.api(VERIFY, { body: assertion });
 	expect(result.status).toBe(400);
 	expect(result.body?.code).toBe("verification_failed");
@@ -96,7 +91,7 @@ test("an assertion claiming another account's user handle is rejected", async ({
 
 test("a signature counter that goes backwards is rejected", async ({ app }) => {
 	await app.goto();
-	await app.createAccount(uniqueName());
+	await app.createAccount();
 	await app.click("Sign out");
 
 	// The virtual authenticator counts: the second assertion carries a larger number.
@@ -137,7 +132,7 @@ test("requests that did not come from the page are refused", async () => {
 
 	const huge = await client.post("/api/passkey/registration/options", {
 		headers: { origin: BASE_URL, "content-type": "application/json" },
-		data: { userName: "x", padding: "x".repeat(70_000) },
+		data: { padding: "x".repeat(70_000) },
 	});
 	expect(huge.status()).toBe(413);
 
@@ -149,16 +144,25 @@ test("requests that did not come from the page are refused", async () => {
 	expect(broken.status()).toBe(400);
 	expect((await broken.json()).code).toBe("invalid_request");
 
-	const deleteAnonymous = await client.delete("/api/passkey/account", {
-		headers: { origin: BASE_URL },
-	});
-	expect(deleteAnonymous.status()).toBe(401);
-	expect((await deleteAnonymous.json()).code).toBe("not_signed_in");
-
 	const session = await client.get("/api/passkey/session");
 	expect(session.status()).toBe(200);
 	expect(session.headers()["cache-control"]).toBe("no-store");
 	expect(await session.json()).toEqual({ user: null });
+	await client.dispose();
+});
+
+test("registration ignores any name the client sends", async () => {
+	const client = await apiClient();
+	const response = await client.post("/api/passkey/registration/options", {
+		headers: { origin: BASE_URL, "content-type": "application/json" },
+		data: { userName: "alice", displayName: "Alice" },
+	});
+	expect(response.status()).toBe(200);
+	const { user } = await response.json();
+	expect(user.name).toMatch(GENERATED_NAME);
+	expect(user.displayName).toBe(user.name);
+	// 32 random bytes: the user handle says nothing about the person.
+	expect(Buffer.from(user.id, "base64url")).toHaveLength(32);
 	await client.dispose();
 });
 
@@ -202,7 +206,7 @@ test("session and flow cookies carry the required attributes", async ({
 		app.page.waitForResponse((response) =>
 			response.url().endsWith("/registration/verify"),
 		),
-		app.createAccount(uniqueName()),
+		app.createAccount(),
 	]);
 
 	// http://localhost cannot use Secure / __Host-, so the unprefixed names are used here.
@@ -227,7 +231,7 @@ test("signing out invalidates the session on the server, not just the cookie", a
 	app,
 }) => {
 	await app.goto();
-	await app.createAccount(uniqueName());
+	await app.createAccount();
 	const cookie = (await app.context.cookies()).find(
 		(entry) => entry.name === SESSION_COOKIE,
 	);
