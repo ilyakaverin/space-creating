@@ -1,16 +1,18 @@
 /**
  * Accounts and their passkeys — docs/passkey-backend-requirements.md §8.
  *
- * Plain data access: no WebAuthn logic lives here. A duplicate credential ID
- * is turned into an API error so a race never surfaces as a 500 (BR-DATA-4).
+ * Plain data access: no WebAuthn logic lives here. Duplicate usernames and
+ * credential IDs are turned into API errors, so a race never surfaces as a
+ * 500 (BR-DATA-4).
  */
 import type { Sql } from "./database";
 import { ApiError } from "./errors";
+import { nameKey } from "./validation";
 
 /** The user as the API returns it; `id` is the WebAuthn user handle (BR-GEN-5). */
 export interface User {
 	id: string;
-	/** Generated at registration, e.g. "Traveller 7K3QX2". */
+	/** The username as typed at registration. */
 	name: string;
 }
 
@@ -42,11 +44,14 @@ interface CredentialRow {
 
 export interface AccountStore {
 	findUser(id: string): Promise<User | null>;
+	/** Case-insensitive, like the uniqueness rule. */
+	findUserByName(name: string): Promise<User | null>;
+	/** Throws `username_taken` if the name was registered meanwhile. */
 	createUser(user: User): Promise<void>;
 	findCredential(id: string): Promise<StoredCredential | null>;
-	/** Those of `ids` that are stored, in the same order, with their transports. */
-	findCredentials(
-		ids: string[],
+	/** The account's passkeys, oldest first, for `allowCredentials`. */
+	listCredentials(
+		userId: string,
 	): Promise<{ id: string; transports: string[] }[]>;
 	/** Throws `verification_failed` if the credential ID is already stored. */
 	addCredential(credential: NewCredential): Promise<void>;
@@ -76,11 +81,30 @@ export const createAccountStore = (
 		return rows[0] ?? null;
 	},
 
-	async createUser(user) {
-		await sql.query(
-			"INSERT INTO users (id, name, created_at) VALUES ($1, $2, $3)",
-			[user.id, user.name, new Date(now())],
+	async findUserByName(name) {
+		const { rows } = await sql.query<User>(
+			"SELECT id, name FROM users WHERE name_key = $1",
+			[nameKey(name)],
 		);
+		return rows[0] ?? null;
+	},
+
+	async createUser(user) {
+		try {
+			await sql.query(
+				"INSERT INTO users (id, name, name_key, created_at) VALUES ($1, $2, $3, $4)",
+				[user.id, user.name, nameKey(user.name), new Date(now())],
+			);
+		} catch (error) {
+			// The handle is 32 random bytes, so a duplicate can only be the name.
+			if (isDuplicateKey(error)) {
+				throw new ApiError(
+					"username_taken",
+					`${user.name} was registered while this ceremony was running.`,
+				);
+			}
+			throw error;
+		}
 	},
 
 	async findCredential(id) {
@@ -105,13 +129,12 @@ export const createAccountStore = (
 		};
 	},
 
-	async findCredentials(ids) {
+	async listCredentials(userId) {
 		const { rows } = await sql.query<{ id: string; transports: string[] }>(
-			"SELECT id, transports FROM credentials WHERE id = ANY($1::text[])",
-			[ids],
+			"SELECT id, transports FROM credentials WHERE user_id = $1 ORDER BY created_at",
+			[userId],
 		);
-		const stored = new Map(rows.map((row) => [row.id, row]));
-		return ids.flatMap((id) => stored.get(id) ?? []);
+		return rows;
 	},
 
 	async addCredential(credential) {

@@ -24,13 +24,18 @@ const adapt = (target: PGlite | Transaction): Sql => ({
 /** Starting PGlite takes seconds, so each test file shares one and empties it per test. */
 let shared: Promise<Db> | undefined;
 
-const start = async (): Promise<Db> => {
+/** A fresh database without any tables, for testing the migrations themselves. */
+export const createEmptyTestDatabase = (): Db => {
 	const pglite = new PGlite();
-	const db: Db = {
+	return {
 		...adapt(pglite),
 		transaction: (fn) => pglite.transaction((tx) => fn(adapt(tx))),
 		close: () => pglite.close(),
 	};
+};
+
+const start = async (): Promise<Db> => {
+	const db = createEmptyTestDatabase();
 	await migrate(db);
 	return db;
 };

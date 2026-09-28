@@ -1,11 +1,9 @@
 /**
- * The three cookies — docs/passkey-backend-requirements.md §6.
+ * The two cookies — docs/passkey-backend-requirements.md §6.
  *
  * - session: who is signed in. HttpOnly, so page scripts cannot read it;
  *   SameSite=Lax, so other sites cannot make the browser send it with a POST.
  * - flow: ties challenges to one browser before anyone is signed in.
- * - device: the passkeys this browser created or signed in with, so it gets
- *   only one (device-credentials.ts). Kept after sign-out, on purpose.
  *
  * With https origins the names get the `__Host-` prefix: browsers then refuse
  * the cookie unless it is Secure, has Path=/ and no Domain, so a subdomain can
@@ -18,10 +16,6 @@ import { randomBytes } from "node:crypto";
 import type { cookies } from "next/headers";
 import "server-only";
 import type { PasskeyConfig } from "./config";
-import {
-	parseDeviceCredentials,
-	serializeDeviceCredentials,
-} from "./device-credentials";
 import type { NewSession } from "./sessions";
 
 /**
@@ -38,21 +32,11 @@ const FLOW_ID_FORMAT = /^[A-Za-z0-9_-]{22}$/;
  * user the challenge expired instead of rejecting it as unknown.
  */
 const FLOW_COOKIE_MAX_AGE_S = 24 * 60 * 60;
-/** The device cookie should last as long as the passkey: 400 days is the most browsers allow. */
-const DEVICE_COOKIE_MAX_AGE_S = 400 * 24 * 60 * 60;
 
 const names = ({ secureCookies }: PasskeyConfig) =>
 	secureCookies
-		? {
-				session: "__Host-passkey-session",
-				flow: "__Host-passkey-flow",
-				device: "__Host-passkey-device",
-			}
-		: {
-				session: "passkey-session",
-				flow: "passkey-flow",
-				device: "passkey-device",
-			};
+		? { session: "__Host-passkey-session", flow: "__Host-passkey-flow" }
+		: { session: "passkey-session", flow: "passkey-flow" };
 
 const sessionAttributes = (config: PasskeyConfig) =>
 	({
@@ -114,36 +98,4 @@ export const readFlowId = (
 ): string | null => {
 	const value = cookies.get(names(config).flow)?.value;
 	return value && FLOW_ID_FORMAT.test(value) ? value : null;
-};
-
-/** Only ever needed by our own fetches, like the flow cookie. */
-const deviceAttributes = (config: PasskeyConfig) =>
-	({
-		path: "/",
-		httpOnly: true,
-		secure: config.secureCookies,
-		sameSite: "strict",
-	}) as const;
-
-/** Credential IDs of the passkeys this browser created or signed in with, newest first. */
-export const readDeviceCredentials = (
-	cookies: CookieStore,
-	config: PasskeyConfig,
-): string[] => parseDeviceCredentials(cookies.get(names(config).device)?.value);
-
-/** Stores the list, renewing the cookie's lifetime; an empty list removes the cookie. */
-export const setDeviceCredentials = (
-	cookies: CookieStore,
-	config: PasskeyConfig,
-	credentialIds: string[],
-): void => {
-	const value = serializeDeviceCredentials(credentialIds);
-	if (!value) {
-		cookies.delete({ name: names(config).device, ...deviceAttributes(config) });
-		return;
-	}
-	cookies.set(names(config).device, value, {
-		...deviceAttributes(config),
-		maxAge: DEVICE_COOKIE_MAX_AGE_S,
-	});
 };

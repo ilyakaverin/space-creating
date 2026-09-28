@@ -33,8 +33,10 @@ import type { NewSession } from "./sessions";
 import {
 	type ClientData,
 	decodeClientData,
+	isRecord,
 	parseAuthenticationResponse,
 	parseRegistrationResponse,
+	parseUserName,
 } from "./validation";
 
 /** What a route knows about the request, independent of HTTP details. */
@@ -44,8 +46,6 @@ export interface RequestContext {
 	sessionTokenHash: string | null;
 	/** From the flow cookie that ties challenges to this browser; null if absent. */
 	flowId: string | null;
-	/** From the device cookie: passkeys this browser created or signed in with (BR-REGO-9). */
-	deviceCredentialIds: string[];
 	/**
 	 * The client's IP address. A function because it throws when the
 	 * configured header is missing from a request; only the rate-limited
@@ -73,14 +73,6 @@ type WithFlow = RequestContext & { flowId: string };
 export interface SignedIn {
 	user: User;
 	session: NewSession;
-	/** The passkey used, for the device cookie. */
-	credentialId: string;
-}
-
-export interface RegistrationStart {
-	options: PublicKeyCredentialCreationOptionsJSON;
-	/** The device cookie's passkeys that still exist; the others can be forgotten. */
-	deviceCredentialIds: string[];
 }
 
 /**
@@ -106,19 +98,6 @@ const LIBRARY_ALGORITHMS = Object.values(COSEALG).filter(
 const MAX_CREDENTIAL_ID_BYTES = 1023;
 
 const randomBytes32 = () => crypto.getRandomValues(new Uint8Array(32));
-
-/** Crockford's base32 alphabet: no I, L, O or U to misread. 256 is a multiple of 32, so unbiased. */
-const NAME_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-
-/**
- * Sign-up asks for no name, but WebAuthn needs one for the passkey: it is
- * what the passkey picker lists. A random one such as "Traveller 7K3QX2"
- * tells two accounts on one device apart. It need not be unique.
- */
-export const generateUserName = (): string => {
-	const bytes = crypto.getRandomValues(new Uint8Array(6));
-	return `Traveller ${Array.from(bytes, (byte) => NAME_ALPHABET[byte % 32]).join("")}`;
-};
 
 const verificationFailed = (reason: unknown) =>
 	new ApiError(
@@ -146,30 +125,35 @@ const rejectCrossOrigin = (clientData: ClientData): void => {
 
 /**
  * POST /registration/options (BR-REGO). Every registration creates a new
- * account: its user handle and name are generated here and only kept with
- * the challenge until the passkey is verified (BR-REGO-4).
+ * account under the username typed; the account only exists with the
+ * challenge until the passkey is verified (BR-REGO-4).
+ *
+ * A username has one account, and an account one passkey — there is no
+ * "add a passkey" — so a device can never get a second passkey for the
+ * same account.
  */
 export const startRegistration = async (
 	{ accounts, challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
-): Promise<RegistrationStart> => {
+	body: unknown,
+): Promise<PublicKeyCredentialCreationOptionsJSON> => {
 	await limiter.consume(
 		`options:${context.clientAddress()}`,
 		RATE_LIMITS.options,
 	);
+	if (!isRecord(body)) {
+		throw new ApiError("invalid_request", "Expected { userName }.");
+	}
+	const { name } = parseUserName(body.userName);
+	// Refused now, before any authenticator prompt opens (BR-REGO-3).
+	if (await accounts.findUserByName(name)) {
+		throw new ApiError("username_taken", `${name} is already registered.`);
+	}
 	const user: User = {
-		// The user handle is random: it must not identify the person (BR-REGO-6).
+		// The user handle is random, never derived from the name (BR-REGO-6).
 		id: isoBase64URL.fromBuffer(randomBytes32()),
-		name: generateUserName(),
+		name,
 	};
-	// One passkey per device (BR-REGO-9): an authenticator that holds one of
-	// this browser's passkeys refuses to create another (InvalidStateError).
-	// Only passkeys that still exist count, so a deleted account never
-	// blocks a new one.
-	const devicePasskeys =
-		context.deviceCredentialIds.length > 0
-			? await accounts.findCredentials(context.deviceCredentialIds)
-			: [];
 
 	const options = await generateRegistrationOptions({
 		rpName: config.rpName,
@@ -181,7 +165,7 @@ export const startRegistration = async (
 		challenge: randomBytes32(),
 		timeout: CEREMONY_TIMEOUT_MS,
 		attestationType: "none",
-		excludeCredentials: devicePasskeys,
+		// No excludeCredentials: the account is new, so it has no passkeys yet.
 		// Discoverable passkeys ("resident keys") store the user handle on the
 		// authenticator, which is what lets sign-in work without a username.
 		// No authenticatorAttachment, so phones and security keys stay possible
@@ -199,10 +183,7 @@ export const startRegistration = async (
 		type: "registration",
 		pendingUser: user,
 	});
-	return {
-		options,
-		deviceCredentialIds: devicePasskeys.map(({ id }) => id),
-	};
+	return options;
 };
 
 /** POST /registration/verify (BR-REGV). Stores the passkey and signs its user in. */
@@ -308,35 +289,54 @@ export const finishRegistration = async (
 		credentialId: info.credential.id,
 		userVerified: info.userVerified,
 	});
-	return { user, session, credentialId: info.credential.id };
+	return { user, session };
 };
 
 // ---------------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------------
 
-/** POST /authentication/options (BR-AUTHO). Identical for everyone: reveals no accounts. */
+/**
+ * POST /authentication/options (BR-AUTHO). `{ userName }` limits the sign-in
+ * to that account's passkeys; `{}` lets any passkey this device holds for
+ * the site answer.
+ */
 export const startAuthentication = async (
-	{ challenges, config, limiter }: PasskeyBackend,
+	{ accounts, challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
+	body: unknown,
 ): Promise<PublicKeyCredentialRequestOptionsJSON> => {
 	await limiter.consume(
 		`options:${context.clientAddress()}`,
 		RATE_LIMITS.options,
 	);
+	if (!isRecord(body)) {
+		throw new ApiError("invalid_request", "Expected { userName? }.");
+	}
+	let user: User | null = null;
+	if (body.userName !== undefined) {
+		const { name } = parseUserName(body.userName);
+		user = await accounts.findUserByName(name);
+		// Says no more than registration's username_taken does (BR-SEC-6).
+		if (!user) {
+			throw new ApiError("unknown_user", `No account is named ${name}.`);
+		}
+	}
 	const options = await generateAuthenticationOptions({
 		rpID: config.rpId,
 		challenge: randomBytes32(),
 		timeout: CEREMONY_TIMEOUT_MS,
 		userVerification: "preferred",
-		// Empty: any discoverable passkey for this site may answer, so the
-		// user needs no username to sign in.
-		allowCredentials: [],
+		// With a username, the browser offers only that account's passkeys.
+		// Without, the list is empty: any discoverable passkey for this site
+		// may answer, and the passkey itself says whose it is.
+		allowCredentials: user ? await accounts.listCredentials(user.id) : [],
 	});
 	await challenges.issue({
 		challenge: options.challenge,
 		flowId: context.flowId,
 		type: "authentication",
+		userId: user?.id ?? null,
 	});
 	return options;
 };
@@ -354,7 +354,7 @@ export const finishAuthentication = async (
 	const response = parseAuthenticationResponse(body);
 	const clientData = decodeClientData(response.response.clientDataJSON);
 	// Used up first, before any other check: a replay or a failed attempt can never reuse it.
-	await challenges.redeem({
+	const challenge = await challenges.redeem({
 		challenge: clientData.challenge,
 		flowId: context.flowId,
 		type: "authentication",
@@ -373,11 +373,18 @@ export const finishAuthentication = async (
 		throw new ApiError("unknown_credential", "No account uses this passkey.");
 	}
 
-	// allowCredentials was empty, so the authenticator chose the passkey and
-	// must say whose it is. The library does not compare this (BR-AUTHV-4).
+	// The authenticator may have chosen the passkey itself, so it must say
+	// whose it is. The library does not compare this (BR-AUTHV-4).
 	if (response.response.userHandle !== owner.id) {
 		throw verificationFailed(
 			"The user handle does not match the passkey's account.",
+		);
+	}
+	// A username was typed: the passkey must be that account's, whatever a
+	// modified client sent instead of what allowCredentials offered (BR-AUTHV-8).
+	if (challenge.userId && challenge.userId !== owner.id) {
+		throw verificationFailed(
+			"The passkey belongs to another account than the username typed.",
 		);
 	}
 
@@ -443,7 +450,7 @@ export const finishAuthentication = async (
 		credentialId: stored.id,
 		userVerified: info.userVerified,
 	});
-	return { user: owner, session, credentialId: stored.id };
+	return { user: owner, session };
 };
 
 // ---------------------------------------------------------------------------

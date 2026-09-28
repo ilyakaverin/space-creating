@@ -4,6 +4,9 @@
  * shows its own text for the code.
  */
 export type PasskeyErrorCode =
+	| "invalid_username"
+	| "username_taken"
+	| "unknown_user"
 	| "challenge_expired"
 	| "unknown_credential"
 	| "verification_failed"
@@ -27,6 +30,12 @@ const GENERIC = "Something went wrong with passkeys. Try again.";
 
 /** A Map, so a code from the backend can never hit an Object.prototype key. */
 const RELYING_PARTY_MESSAGES = new Map<string, string>([
+	["invalid_username", "Enter a username of up to 64 characters."],
+	[
+		"username_taken",
+		"That username is taken. If it's yours, sign in with its passkey.",
+	],
+	["unknown_user", "No account has that username. Sign up to create one."],
 	["rate_limited", "Too many attempts. Wait a minute and try again."],
 	["challenge_expired", "The request expired. Try again."],
 	["unknown_credential", "That passkey isn't registered here any more."],
@@ -74,11 +83,6 @@ export const describeError = (
 			return ceremony === "registration"
 				? "Passkey creation was cancelled or didn't complete. Try again."
 				: "Sign-in was cancelled or didn't complete. Try again.";
-		case "InvalidStateError":
-			// The authenticator holds one of the passkeys in excludeCredentials.
-			return ceremony === "registration"
-				? "This device already has a passkey here. Sign in with it instead."
-				: GENERIC;
 		case "NotSupportedError":
 			return "This device or browser can't use the kind of passkey this site asks for.";
 		case "SecurityError":

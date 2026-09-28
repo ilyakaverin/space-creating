@@ -9,10 +9,13 @@
 
 export type ErrorCode =
 	| "invalid_request"
+	| "invalid_username"
 	| "verification_failed"
 	| "challenge_expired"
 	| "forbidden_origin"
 	| "unknown_credential"
+	| "unknown_user"
+	| "username_taken"
 	| "payload_too_large"
 	| "unsupported_media_type"
 	| "unsupported_authenticator"
@@ -21,12 +24,16 @@ export type ErrorCode =
 
 const STATUS: Record<ErrorCode, number> = {
 	invalid_request: 400,
+	invalid_username: 400,
 	verification_failed: 400,
 	challenge_expired: 400,
 	forbidden_origin: 403,
 	// Reserved for "this credential ID is not stored": the frontend then asks the
 	// password manager to hide the passkey, so nothing else may use it (BR-ERR-3).
 	unknown_credential: 404,
+	// No account has the username typed at sign-in.
+	unknown_user: 404,
+	username_taken: 409,
 	payload_too_large: 413,
 	unsupported_media_type: 415,
 	unsupported_authenticator: 422,

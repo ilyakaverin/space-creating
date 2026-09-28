@@ -37,6 +37,16 @@ beforeEach(async () => {
 });
 
 describe("account store", () => {
+	it("finds a user by name regardless of case, and refuses a second one", async () => {
+		expect((await accounts.findUserByName("traveller 7k3qx2"))?.id).toBe("u1");
+		expect(await accounts.findUserByName("someone else")).toBeNull();
+		expect(
+			await codeOf(() =>
+				accounts.createUser({ id: "u2", name: "TRAVELLER 7K3QX2" }),
+			),
+		).toBe("username_taken");
+	});
+
 	it("finds a user by handle", async () => {
 		expect(await accounts.findUser("u1")).toEqual({
 			id: "u1",
@@ -61,14 +71,12 @@ describe("account store", () => {
 		expect(await accounts.findCredential("c2")).toBeNull();
 	});
 
-	it("finds which of several credential IDs are stored, keeping their order", async () => {
+	it("lists an account's passkeys for allowCredentials", async () => {
 		await accounts.addCredential(passkey("c1", 0));
-		await accounts.addCredential({ ...passkey("c2", 0), transports: [] });
-		expect(await accounts.findCredentials(["c2", "gone", "c1"])).toEqual([
-			{ id: "c2", transports: [] },
+		expect(await accounts.listCredentials("u1")).toEqual([
 			{ id: "c1", transports: ["internal", "hybrid"] },
 		]);
-		expect(await accounts.findCredentials([])).toEqual([]);
+		expect(await accounts.listCredentials("nobody")).toEqual([]);
 	});
 
 	it("refuses a credential ID that is already stored", async () => {

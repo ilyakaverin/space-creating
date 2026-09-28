@@ -16,7 +16,6 @@ import type { PasskeyConfig } from "./config";
 import {
 	type CookieStore,
 	clearSessionCookie,
-	readDeviceCredentials,
 	readSessionToken,
 	setSessionCookie,
 } from "./cookies";
@@ -155,7 +154,6 @@ export const passkeyEndpoint =
 			user: null,
 			sessionTokenHash: null,
 			flowId: null,
-			deviceCredentialIds: [],
 			clientAddress: () => {
 				throw new Error("The passkey backend is not running.");
 			},
@@ -176,7 +174,6 @@ export const passkeyEndpoint =
 				scheduleCleanup(backend);
 			}
 			const cookieStore = await cookies();
-			context.deviceCredentialIds = readDeviceCredentials(cookieStore, config);
 			Object.assign(context, await resolveSession(cookieStore, backend));
 			response = await handler({
 				request,

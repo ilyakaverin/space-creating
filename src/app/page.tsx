@@ -1,4 +1,4 @@
-import { PasskeyLogin } from "@/components/PasskeyLogin";
+import { Account } from "@/components/Account";
 import styles from "./page.module.css";
 
 export default function Home() {
@@ -12,7 +12,7 @@ export default function Home() {
 				width={32}
 				height={32}
 			/>
-			<PasskeyLogin />
+			<Account />
 		</main>
 	);
 }

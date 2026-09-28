@@ -21,8 +21,7 @@ const CLIENT_IP_HEADER = "x-test-client-ip";
 /** Over http://localhost the session cookie cannot carry the __Host- prefix. */
 export const SESSION_COOKIE = "passkey-session";
 
-/** The names the backend generates for new accounts. */
-export const GENERATED_NAME = /^Traveller [0-9A-Z]{6}$/;
+export const uniqueName = (): string => `user-${randomUUID().slice(0, 8)}`;
 
 /** Runs one statement on the test server's database. */
 export const queryDb = async <T>(
@@ -63,21 +62,27 @@ export interface App {
 	cdp: CDPSession;
 	/** Passkeys currently held by the virtual authenticator. */
 	credentials(): Promise<{ credentialId: string; signCount: number }[]>;
-	/** Removes every passkey from the virtual authenticator, as a user deleting them would. */
-	clearAuthenticator(): Promise<void>;
-	goto(): Promise<void>;
+	/** Opens a page and waits until it knows the session. */
+	goto(path?: string): Promise<void>;
 	/** Waits until no ceremony is running. */
 	settle(): Promise<void>;
 	/** The status line under the buttons. */
 	message(): Promise<string>;
-	/** The account's generated name when signed in, otherwise null. */
+	/** The username the home page shows as signed in, otherwise null. */
 	signedInAs(): Promise<string | null>;
 	/** The signed-in account as the API reports it. */
 	currentUser(): Promise<{ id: string; name: string } | null>;
-	/** Names of the buttons on show. */
-	buttons(): Promise<string[]>;
+	/** Names of the buttons and links on show. */
+	actions(): Promise<string[]>;
+	/** Clicks a button or link and waits until the page has settled. */
 	click(name: string): Promise<void>;
-	createAccount(): Promise<void>;
+	/**
+	 * On the login page, signs up as `userName` (a fresh one by default). On
+	 * success the browser ends up on the home page. Resolves to the username.
+	 */
+	createAccount(userName?: string): Promise<string>;
+	/** On the login page, signs in — as `userName`, or with the field left empty. */
+	signIn(userName?: string): Promise<void>;
 	/** Calls the API from inside the page, so cookies and the Origin header are real. */
 	api(
 		path: string,
@@ -120,7 +125,14 @@ export const openApp = async (browser: Browser): Promise<App> => {
 		await page.waitForTimeout(100);
 	};
 	const click = async (name: string) => {
-		await page.getByRole("button", { name }).click();
+		await section
+			.getByRole("button", { name })
+			.or(section.getByRole("link", { name }))
+			.click();
+		await settle();
+	};
+	const goto = async (path = "/") => {
+		await page.goto(path);
 		await settle();
 	};
 
@@ -149,13 +161,7 @@ export const openApp = async (browser: Browser): Promise<App> => {
 		credentials: async () =>
 			(await cdp.send("WebAuthn.getCredentials", { authenticatorId }))
 				.credentials,
-		clearAuthenticator: async () => {
-			await cdp.send("WebAuthn.clearCredentials", { authenticatorId });
-		},
-		goto: async () => {
-			await page.goto("/");
-			await settle();
-		},
+		goto,
 		settle,
 		message: async () =>
 			(await section.locator("p.message[aria-live]").innerText()).trim(),
@@ -166,9 +172,19 @@ export const openApp = async (browser: Browser): Promise<App> => {
 				id: string;
 				name: string;
 			} | null,
-		buttons: () => section.getByRole("button").allInnerTexts(),
+		actions: () => section.locator("button, a").allInnerTexts(),
 		click,
-		createAccount: () => click("Create a passkey"),
+		createAccount: async (userName = uniqueName()) => {
+			await goto("/login");
+			await page.fill('input[name="username"]', userName);
+			await click("Sign up");
+			return userName;
+		},
+		signIn: async (userName = "") => {
+			await goto("/login");
+			await page.fill('input[name="username"]', userName);
+			await click("Sign in");
+		},
 		api,
 		freshAssertion: () =>
 			page.evaluate(async () => {

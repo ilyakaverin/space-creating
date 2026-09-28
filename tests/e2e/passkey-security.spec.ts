@@ -6,12 +6,12 @@
 import { request } from "@playwright/test";
 import { BASE_URL } from "../../playwright.config";
 import {
-	GENERATED_NAME,
 	SESSION_COOKIE,
 	apiClient,
 	expect,
 	openApp,
 	test,
+	uniqueName,
 } from "./fixtures";
 
 const VERIFY = "/authentication/verify";
@@ -89,6 +89,38 @@ test("an assertion claiming another account's user handle is rejected", async ({
 	expect(result.body?.code).toBe("verification_failed");
 });
 
+test("a sign-in for a typed username only accepts that account's passkey", async ({
+	app,
+	browser,
+}) => {
+	const other = await openApp(browser);
+	const otherName = await other.createAccount();
+	await other.context.close();
+
+	await app.createAccount();
+	await app.click("Sign out");
+	// A modified client asks for the other account's options, then answers
+	// the challenge with its own passkey instead of one allowCredentials names.
+	const assertion = await app.page.evaluate(async (userName) => {
+		const response = await fetch("/api/passkey/authentication/options", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ userName }),
+		});
+		const options = await response.json();
+		const credential = (await navigator.credentials.get({
+			publicKey: PublicKeyCredential.parseRequestOptionsFromJSON({
+				...options,
+				allowCredentials: [],
+			}),
+		})) as PublicKeyCredential;
+		return credential.toJSON();
+	}, otherName);
+	const result = await app.api(VERIFY, { body: assertion });
+	expect(result.status).toBe(400);
+	expect(result.body?.code).toBe("verification_failed");
+});
+
 test("a signature counter that goes backwards is rejected", async ({ app }) => {
 	await app.goto();
 	await app.createAccount();
@@ -147,22 +179,33 @@ test("requests that did not come from the page are refused", async () => {
 	const session = await client.get("/api/passkey/session");
 	expect(session.status()).toBe(200);
 	expect(session.headers()["cache-control"]).toBe("no-store");
-	expect(await session.json()).toEqual({ user: null, devicePasskey: false });
+	expect(await session.json()).toEqual({ user: null });
 	await client.dispose();
 });
 
-test("registration ignores any name the client sends", async () => {
+test("registration options name the account as typed, with a random handle", async () => {
 	const client = await apiClient();
-	const response = await client.post("/api/passkey/registration/options", {
-		headers: { origin: BASE_URL, "content-type": "application/json" },
-		data: { userName: "alice", displayName: "Alice" },
-	});
+	const post = (data: unknown) =>
+		client.post("/api/passkey/registration/options", {
+			headers: { origin: BASE_URL, "content-type": "application/json" },
+			data,
+		});
+	const name = uniqueName();
+
+	const response = await post({ userName: ` ${name} ` });
 	expect(response.status()).toBe(200);
-	const { user } = await response.json();
-	expect(user.name).toMatch(GENERATED_NAME);
-	expect(user.displayName).toBe(user.name);
+	const { user, excludeCredentials } = await response.json();
+	expect(user.name).toBe(name);
+	expect(user.displayName).toBe(name);
 	// 32 random bytes: the user handle says nothing about the person.
 	expect(Buffer.from(user.id, "base64url")).toHaveLength(32);
+	expect(excludeCredentials).toEqual([]);
+
+	for (const data of [{}, { userName: "" }, { userName: "x".repeat(65) }]) {
+		const invalid = await post(data);
+		expect(invalid.status()).toBe(400);
+		expect((await invalid.json()).code).toBe("invalid_username");
+	}
 	await client.dispose();
 });
 
@@ -172,7 +215,7 @@ test("reading the session needs neither an Origin nor a client address", async (
 	const client = await request.newContext({ baseURL: BASE_URL });
 	const get = await client.get("/api/passkey/session");
 	expect(get.status()).toBe(200);
-	expect(await get.json()).toEqual({ user: null, devicePasskey: false });
+	expect(await get.json()).toEqual({ user: null });
 	// HEAD is answered by the GET handler and, like GET, needs no Origin.
 	expect((await client.head("/api/passkey/session")).status()).toBe(200);
 	await client.dispose();
@@ -195,7 +238,7 @@ test("options endpoints are rate limited per client", async () => {
 	await client.dispose();
 });
 
-test("session, flow and device cookies carry the required attributes", async ({
+test("session and flow cookies carry the required attributes", async ({
 	app,
 }) => {
 	await app.goto();
@@ -208,24 +251,16 @@ test("session, flow and device cookies carry the required attributes", async ({
 		),
 		app.createAccount(),
 	]);
-	const cookieNamed = async (
-		response: typeof optionsResponse,
-		name: string,
-	): Promise<string> =>
-		(await response.headersArray()).find(
-			(header) =>
-				header.name.toLowerCase() === "set-cookie" &&
-				header.value.startsWith(`${name}=`),
-		)?.value ?? "";
 
 	// http://localhost cannot use Secure / __Host-, so the unprefixed names are used here.
-	const flowCookie = await cookieNamed(optionsResponse, "passkey-flow");
+	const flowCookie = await optionsResponse.headerValue("set-cookie");
+	expect(flowCookie).toMatch(/^passkey-flow=/);
 	expect(flowCookie).toContain("HttpOnly");
 	expect(flowCookie).toMatch(/SameSite=Strict/i);
 	// Outlives its challenges, so a late answer can still be told "expired".
 	expect(flowCookie).toContain("Max-Age=86400");
 
-	const sessionCookie = await cookieNamed(verifyResponse, SESSION_COOKIE);
+	const sessionCookie = await verifyResponse.headerValue("set-cookie");
 	expect(sessionCookie).toMatch(
 		new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43};`),
 	);
@@ -233,28 +268,6 @@ test("session, flow and device cookies carry the required attributes", async ({
 	expect(sessionCookie).toMatch(/SameSite=Lax/i);
 	expect(sessionCookie).toContain("Path=/");
 	expect(sessionCookie).toContain("Expires=");
-
-	// Names the new passkey and lasts as long as browsers allow (400 days).
-	const deviceCookie = await cookieNamed(verifyResponse, "passkey-device");
-	expect(deviceCookie).toMatch(/^passkey-device=[A-Za-z0-9_-]+;/);
-	expect(deviceCookie).toContain("HttpOnly");
-	expect(deviceCookie).toMatch(/SameSite=Strict/i);
-	expect(deviceCookie).toContain("Max-Age=34560000");
-});
-
-test("a forged device cookie is ignored or only excludes real passkeys", async () => {
-	const client = await apiClient({
-		cookie: "passkey-device=not!valid.unknown-credential-id",
-	});
-	const response = await client.post("/api/passkey/registration/options", {
-		headers: { origin: BASE_URL, "content-type": "application/json" },
-		data: {},
-	});
-	expect(response.status()).toBe(200);
-	expect((await response.json()).excludeCredentials).toEqual([]);
-	// The unknown ID is forgotten.
-	expect(response.headers()["set-cookie"]).toMatch(/passkey-device=;/);
-	await client.dispose();
 });
 
 test("signing out invalidates the session on the server, not just the cookie", async ({
@@ -272,6 +285,6 @@ test("signing out invalidates the session on the server, not just the cookie", a
 		cookie: `${SESSION_COOKIE}=${cookie?.value}`,
 	});
 	const response = await client.get("/api/passkey/session");
-	expect(await response.json()).toEqual({ user: null, devicePasskey: false });
+	expect(await response.json()).toEqual({ user: null });
 	await client.dispose();
 });
