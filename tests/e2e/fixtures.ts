@@ -63,6 +63,8 @@ export interface App {
 	cdp: CDPSession;
 	/** Passkeys currently held by the virtual authenticator. */
 	credentials(): Promise<{ credentialId: string; signCount: number }[]>;
+	/** Removes every passkey from the virtual authenticator, as a user deleting them would. */
+	clearAuthenticator(): Promise<void>;
 	goto(): Promise<void>;
 	/** Waits until no ceremony is running. */
 	settle(): Promise<void>;
@@ -147,6 +149,9 @@ export const openApp = async (browser: Browser): Promise<App> => {
 		credentials: async () =>
 			(await cdp.send("WebAuthn.getCredentials", { authenticatorId }))
 				.credentials,
+		clearAuthenticator: async () => {
+			await cdp.send("WebAuthn.clearCredentials", { authenticatorId });
+		},
 		goto: async () => {
 			await page.goto("/");
 			await settle();

@@ -61,6 +61,16 @@ describe("account store", () => {
 		expect(await accounts.findCredential("c2")).toBeNull();
 	});
 
+	it("finds which of several credential IDs are stored, keeping their order", async () => {
+		await accounts.addCredential(passkey("c1", 0));
+		await accounts.addCredential({ ...passkey("c2", 0), transports: [] });
+		expect(await accounts.findCredentials(["c2", "gone", "c1"])).toEqual([
+			{ id: "c2", transports: [] },
+			{ id: "c1", transports: ["internal", "hybrid"] },
+		]);
+		expect(await accounts.findCredentials([])).toEqual([]);
+	});
+
 	it("refuses a credential ID that is already stored", async () => {
 		await accounts.addCredential(passkey("c1", 0));
 		expect(await codeOf(() => accounts.addCredential(passkey("c1", 0)))).toBe(

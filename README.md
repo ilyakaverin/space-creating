@@ -18,7 +18,7 @@ Installable as a PWA: `public/favicon/site.webmanifest` plus `public/service-wor
 
 ## Passkeys
 
-`src/components/PasskeyLogin.tsx` signs up and signs in with passkeys (WebAuthn), without usernames: "Create a passkey" makes a new account and names it (for example "Traveller 7K3QX2"), "Sign in with a passkey" lets the browser offer the passkeys this device has for the site, and a signed-in user sees "Sign out". Passkeys only work in a secure context — https, or `localhost` in development (not the LAN address `pnpm dev` also prints).
+`src/components/PasskeyLogin.tsx` signs up and signs in with passkeys (WebAuthn), without usernames: "Create a passkey" makes a new account and names it (for example "Traveller 7K3QX2"), "Sign in with a passkey" lets the browser offer the passkeys this device has for the site, and a signed-in user sees "Sign out". Each device gets one passkey: once this browser has created or used one, it is only offered "Sign in", and the authenticator refuses to create a second one (a cookie remembers the passkey; WebAuthn gives a site no other way to know). Passkeys only work in a secure context — https, or `localhost` in development (not the LAN address `pnpm dev` also prints).
 
 The UI talks to the backend through `src/lib/passkey/http-relying-party.ts`; nothing is stored in the browser. The backend lives in `src/lib/server/passkey/` (route handlers under `src/app/api/passkey`, `@simplewebauthn/server`) and keeps accounts, passkeys, sessions, challenges and rate limits in Postgres — Neon, created through Vercel. [Its README](src/lib/server/passkey/README.md) walks through the files.
 
@@ -50,7 +50,7 @@ Binary fields are base64url strings throughout. Options use the WebAuthn Level 3
 | `POST /registration/verify` | registration credential | `{ user }`, account created, session started |
 | `POST /authentication/options` | `{}` | request options with empty `allowCredentials` (any discoverable passkey) |
 | `POST /authentication/verify` | assertion | `{ user }`, session started |
-| `GET /session` | — | `{ user }` or `{ user: null }` |
+| `GET /session` | — | `{ user, devicePasskey }`; `user` is `null` when signed out |
 | `DELETE /session` | — | 204, signed out |
 
 `user` is `{ id, name }`, where `id` is the base64url user handle and `name` the generated name. Failures answer with a non-2xx status and `{ "code": "...", "message": "..." }`; the UI maps `challenge_expired`, `unknown_credential`, `verification_failed`, `unsupported_authenticator` and `rate_limited` to its own text and shows a generic message for anything else. `message` is for developers and is only logged in development.

@@ -12,7 +12,7 @@ The words **MUST**, **SHOULD** and **MAY** are used as in RFC 2119.
 
 - The frontend (`src/lib/passkey/http-relying-party.ts`) implements the client side of the contract and always talks to this backend; nothing is stored in the browser. §12 lists optional follow-ups.
 - The backend owns everything security-relevant: challenges, attestation and assertion verification, credential storage, accounts and sessions. The frontend only forwards opaque WebAuthn data.
-- Accounts have no username or display name. "Create a passkey" makes a new account whose name the backend generates; "Sign in with a passkey" lets the browser offer every passkey the device holds for this site. A signed-in user can only sign out: there is no "add a passkey" and no account deletion.
+- Accounts have no username or display name. "Create a passkey" makes a new account whose name the backend generates; "Sign in with a passkey" lets the browser offer every passkey the device holds for this site. A signed-in user can only sign out: there is no "add a passkey" and no account deletion. Each device gets one passkey (BR-REGO-9).
 
 ```
 Browser ── PasskeyLogin.tsx → http-relying-party.ts
@@ -115,13 +115,14 @@ Starts a registration, which always creates a **new account**. Request: `{}` —
 | `challenge` | New challenge (§5) |
 | `pubKeyCredParams` | MUST include ES256 (`-7`) and RS256 (`-257`); MAY list EdDSA (`-8`) first |
 | `timeout` | `300000` |
-| `excludeCredentials` | `[]`: the account is new, so it has no passkeys yet |
+| `excludeCredentials` | The device cookie's passkeys that still exist, as `{ "type": "public-key", "id", "transports" }` (BR-REGO-9); usually `[]` |
 | `authenticatorSelection` | `{ "residentKey": "required", "requireResidentKey": true, "userVerification": "preferred" }` — discoverable, so sign-in needs no username; no `authenticatorAttachment`, so phones and security keys stay possible (FR-OPT-3) |
 | `attestation` | `"none"` |
 | `extensions` | MAY be `{ "credProps": true }`; nothing may depend on it, because the frontend's fallback parser drops extensions |
 | `hints` | Omitted |
 
 - **BR-REGO-8** Issues the challenge and sets the flow cookie (§5, §6.2).
+- **BR-REGO-9** One passkey per device. WebAuthn lets no site ask a device which passkeys it holds; only an authenticator shown a credential ID can say it has that one. So the browser keeps the IDs of the passkeys it created or signed in with in the device cookie (BR-COOK-10), and the options list those that still exist in `excludeCredentials`. An authenticator holding one of them refuses to create another: `create()` fails with `InvalidStateError`, which the frontend shows as "This device already has a passkey here. Sign in with it instead." IDs no longer in the database are left out and removed from the cookie, so a deleted account never blocks a new passkey. The rule holds per browser: another browser, or one whose site data was cleared, does not know the passkey and may create one — WebAuthn gives no way to find out.
 
 ### 4.2 `POST /registration/verify`
 Finishes a registration. Request: the registration credential as produced by `toJSON()`:
@@ -165,7 +166,8 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-AUTHV-7** Response `200 { "user": User }` plus the session cookie.
 
 ### 4.5 `GET /session`
-- **BR-SES-1** Always `200`: `{ "user": User }` for a live session, otherwise `{ "user": null }`. Never `401` — the frontend calls this on every page load and would show an error. It shows no buttons until this answers, so without a session cookie it answers without touching the database (BR-OPS-1).
+- **BR-SES-1** Always `200`: `{ "user": User | null, "devicePasskey": boolean }` — `user` for a live session, otherwise `null`. Never `401` — the frontend calls this on every page load and would show an error. It shows no buttons until this answers, so without a session cookie it answers without touching the database (BR-OPS-1).
+- **BR-SES-6** `devicePasskey` is true when the device cookie names any passkey (BR-COOK-10), read from the cookie alone. Signed out, the frontend then offers only "Sign in with a passkey"; "Create a passkey" returns after a failed sign-in, for someone whose passkey is gone — BR-REGO-9 still stops a second one if it is not.
 - **BR-SES-2** An unknown or expired session cookie is cleared in the response.
 - **BR-SES-3** MAY extend the session (sliding expiry, BR-COOK-5).
 
@@ -203,6 +205,9 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 
 ### 6.2 Flow cookie
 - **BR-COOK-9** Name `__Host-passkey-flow` (development: `passkey-flow`, no `Secure`); `HttpOnly`, `SameSite=Strict`, `Path=/`; value 16 random bytes, base64url; `Max-Age` one day, refreshed whenever options are issued — longer than the challenges, so it is still present when a late answer arrives (BR-CH-8). It only links challenges to a browser and grants no access by itself.
+
+### 6.3 Device cookie
+- **BR-COOK-10** Name `__Host-passkey-device` (development: `passkey-device`, no `Secure`); `HttpOnly`, `SameSite=Strict`, `Path=/`, `Max-Age` 400 days (the most browsers keep a cookie). Value: up to 5 credential IDs, newest first, joined with `.`. Set by both verify endpoints with the passkey just used, and kept on sign-out — that is its purpose. The client can edit it, so it is parsed strictly and only ever used to exclude passkeys that exist, which can only stop the sender from making a passkey. It does link the browser to its accounts after sign-out, which is the price of recognizing the device.
 
 ---
 
@@ -323,6 +328,7 @@ What the merged frontend relies on; each item is also a requirement above.
 - Errors are `{ code, message }`; unknown codes show a generic message (BR-ERR-2).
 - `user.id` is the WebAuthn user handle (BR-GEN-5); `unknown_credential` triggers the Signal API (BR-ERR-3).
 - Registration options are requested with `{}`; the backend names the account (BR-REGO-4).
+- `GET /session` also answers `devicePasskey`; `InvalidStateError` from `create()` means this device already has a passkey (BR-REGO-9, BR-SES-6).
 - `NEXT_PUBLIC_PASSKEY_RP_ID` is only needed when the RP ID is not the page's hostname.
 
 ---
@@ -347,14 +353,16 @@ What the merged frontend relies on; each item is also a requirement above.
 
 ## 14. Testing
 
-- **BR-TEST-1** Unit tests (Vitest, on PGlite) cover: configuration, including the Vercel origin and the database URL; migrations; generated names; credential storage round-trips and transaction rollback; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, sliding expiry and expiry cleanup; rate limits, also under concurrency; error-to-status mapping; counter logic.
+- **BR-TEST-1** Unit tests (Vitest, on PGlite) cover: the device cookie's parsing and limits; configuration, including the Vercel origin and the database URL; migrations; generated names; credential storage round-trips and transaction rollback; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, sliding expiry and expiry cleanup; rate limits, also under concurrency; error-to-status mapping; counter logic.
 - **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` on a throwaway Postgres database named by `E2E_DATABASE_URL`, and cover every flow in FR-TEST-4:
   - register, reload (still signed in), sign out, sign in with the button;
   - no input fields; signed in, "Sign out" is the only button;
-  - each "Create a passkey" makes a new account with its own generated name;
+  - nothing is shown until `GET /session` answers;
+  - one passkey per device: after sign-out only sign-in is offered, the options exclude the device's passkey, and a second `create()` is refused with `InvalidStateError`;
+  - a device whose passkey was deleted from the authenticator can create a new one (a new account);
   - sign in when the authenticator has no passkey → neutral message;
   - credential deleted from the database → `404 unknown_credential`, and the virtual authenticator loses the passkey through the Signal API.
-- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration ignores a client-supplied name; a signed-out session token is rejected server-side; cookie attributes asserted.
+- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration ignores a client-supplied name; a forged device cookie excludes nothing; a signed-out session token is rejected server-side; cookie attributes asserted.
 - **BR-TEST-4** Manual checks: Chrome, Safari and Firefox; a platform authenticator and a security key; the real deployed domain (FR-TEST-1, -2, -5).
 
 ---

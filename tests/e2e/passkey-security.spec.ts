@@ -147,7 +147,7 @@ test("requests that did not come from the page are refused", async () => {
 	const session = await client.get("/api/passkey/session");
 	expect(session.status()).toBe(200);
 	expect(session.headers()["cache-control"]).toBe("no-store");
-	expect(await session.json()).toEqual({ user: null });
+	expect(await session.json()).toEqual({ user: null, devicePasskey: false });
 	await client.dispose();
 });
 
@@ -172,7 +172,7 @@ test("reading the session needs neither an Origin nor a client address", async (
 	const client = await request.newContext({ baseURL: BASE_URL });
 	const get = await client.get("/api/passkey/session");
 	expect(get.status()).toBe(200);
-	expect(await get.json()).toEqual({ user: null });
+	expect(await get.json()).toEqual({ user: null, devicePasskey: false });
 	// HEAD is answered by the GET handler and, like GET, needs no Origin.
 	expect((await client.head("/api/passkey/session")).status()).toBe(200);
 	await client.dispose();
@@ -195,7 +195,7 @@ test("options endpoints are rate limited per client", async () => {
 	await client.dispose();
 });
 
-test("session and flow cookies carry the required attributes", async ({
+test("session, flow and device cookies carry the required attributes", async ({
 	app,
 }) => {
 	await app.goto();
@@ -208,16 +208,24 @@ test("session and flow cookies carry the required attributes", async ({
 		),
 		app.createAccount(),
 	]);
+	const cookieNamed = async (
+		response: typeof optionsResponse,
+		name: string,
+	): Promise<string> =>
+		(await response.headersArray()).find(
+			(header) =>
+				header.name.toLowerCase() === "set-cookie" &&
+				header.value.startsWith(`${name}=`),
+		)?.value ?? "";
 
 	// http://localhost cannot use Secure / __Host-, so the unprefixed names are used here.
-	const flowCookie = await optionsResponse.headerValue("set-cookie");
-	expect(flowCookie).toMatch(/^passkey-flow=/);
+	const flowCookie = await cookieNamed(optionsResponse, "passkey-flow");
 	expect(flowCookie).toContain("HttpOnly");
 	expect(flowCookie).toMatch(/SameSite=Strict/i);
 	// Outlives its challenges, so a late answer can still be told "expired".
 	expect(flowCookie).toContain("Max-Age=86400");
 
-	const sessionCookie = await verifyResponse.headerValue("set-cookie");
+	const sessionCookie = await cookieNamed(verifyResponse, SESSION_COOKIE);
 	expect(sessionCookie).toMatch(
 		new RegExp(`^${SESSION_COOKIE}=[A-Za-z0-9_-]{43};`),
 	);
@@ -225,6 +233,28 @@ test("session and flow cookies carry the required attributes", async ({
 	expect(sessionCookie).toMatch(/SameSite=Lax/i);
 	expect(sessionCookie).toContain("Path=/");
 	expect(sessionCookie).toContain("Expires=");
+
+	// Names the new passkey and lasts as long as browsers allow (400 days).
+	const deviceCookie = await cookieNamed(verifyResponse, "passkey-device");
+	expect(deviceCookie).toMatch(/^passkey-device=[A-Za-z0-9_-]+;/);
+	expect(deviceCookie).toContain("HttpOnly");
+	expect(deviceCookie).toMatch(/SameSite=Strict/i);
+	expect(deviceCookie).toContain("Max-Age=34560000");
+});
+
+test("a forged device cookie is ignored or only excludes real passkeys", async () => {
+	const client = await apiClient({
+		cookie: "passkey-device=not!valid.unknown-credential-id",
+	});
+	const response = await client.post("/api/passkey/registration/options", {
+		headers: { origin: BASE_URL, "content-type": "application/json" },
+		data: {},
+	});
+	expect(response.status()).toBe(200);
+	expect((await response.json()).excludeCredentials).toEqual([]);
+	// The unknown ID is forgotten.
+	expect(response.headers()["set-cookie"]).toMatch(/passkey-device=;/);
+	await client.dispose();
 });
 
 test("signing out invalidates the session on the server, not just the cookie", async ({
@@ -242,6 +272,6 @@ test("signing out invalidates the session on the server, not just the cookie", a
 		cookie: `${SESSION_COOKIE}=${cookie?.value}`,
 	});
 	const response = await client.get("/api/passkey/session");
-	expect(await response.json()).toEqual({ user: null });
+	expect(await response.json()).toEqual({ user: null, devicePasskey: false });
 	await client.dispose();
 });
