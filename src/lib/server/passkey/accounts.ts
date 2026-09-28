@@ -44,6 +44,10 @@ export interface AccountStore {
 	findUser(id: string): Promise<User | null>;
 	createUser(user: User): Promise<void>;
 	findCredential(id: string): Promise<StoredCredential | null>;
+	/** Those of `ids` that are stored, in the same order, with their transports. */
+	findCredentials(
+		ids: string[],
+	): Promise<{ id: string; transports: string[] }[]>;
 	/** Throws `verification_failed` if the credential ID is already stored. */
 	addCredential(credential: NewCredential): Promise<void>;
 	/**
@@ -99,6 +103,15 @@ export const createAccountStore = (
 			backupEligible: row.backup_eligible,
 			backedUp: row.backed_up,
 		};
+	},
+
+	async findCredentials(ids) {
+		const { rows } = await sql.query<{ id: string; transports: string[] }>(
+			"SELECT id, transports FROM credentials WHERE id = ANY($1::text[])",
+			[ids],
+		);
+		const stored = new Map(rows.map((row) => [row.id, row]));
+		return ids.flatMap((id) => stored.get(id) ?? []);
 	},
 
 	async addCredential(credential) {

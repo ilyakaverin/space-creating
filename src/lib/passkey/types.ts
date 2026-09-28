@@ -10,6 +10,16 @@ export interface User {
 	name: string;
 }
 
+/** What `GET /session` answers. */
+export interface SessionState {
+	user: User | null;
+	/**
+	 * This browser already created or signed in with a passkey here. The UI
+	 * then offers sign-in rather than another passkey: one per device.
+	 */
+	devicePasskey: boolean;
+}
+
 /** `PublicKeyCredential.toJSON()` of a registration, per WebAuthn Level 3. */
 export interface RegistrationResponseJSON {
 	id: string;
@@ -53,7 +63,7 @@ export interface RelyingParty {
 	authenticationOptions(): Promise<PublicKeyCredentialRequestOptionsJSON>;
 	/** Verifies the assertion and signs its user in. */
 	verifyAuthentication(credential: AuthenticationResponseJSON): Promise<User>;
-	/** The signed-in user, or null. */
-	currentUser(): Promise<User | null>;
+	/** Who is signed in, and whether this browser has a passkey here. */
+	session(): Promise<SessionState>;
 	signOut(): Promise<void>;
 }

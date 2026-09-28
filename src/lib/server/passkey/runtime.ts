@@ -11,7 +11,7 @@ import {
 	createPasskeyBackend,
 } from "./backend";
 import { ConfigError, parseConfig } from "./config";
-import { connectDatabase, migrate } from "./database";
+import { connectDatabase, migrateOnFirstUse } from "./database";
 
 const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 
@@ -23,35 +23,23 @@ const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
  * restart (on Vercel, a redeploy).
  */
 const holder = globalThis as typeof globalThis & {
-	passkeyBackend?: Promise<PasskeyBackend>;
+	passkeyBackend?: PasskeyBackend;
 	passkeyNextCleanup?: number;
 };
 
-const start = async (): Promise<PasskeyBackend> => {
-	const config = parseConfig(process.env, {
-		dev: process.env.NODE_ENV === "development",
-	});
-	const db = connectDatabase(config.databaseUrl);
-	try {
-		await migrate(db);
-	} catch (error) {
-		await db.close().catch(() => undefined);
-		throw error;
-	}
-	return createPasskeyBackend(config, { db });
-};
-
 /**
- * The backend of this process: validates the configuration, connects to
- * the database and brings its schema up to date, once. A failed start is
- * not kept, so the next request tries again — the database may only have
- * been unreachable for a moment.
+ * The backend of this process, created on first use. Throws a ConfigError
+ * for bad configuration, and does so again on every call until it is fixed.
+ * Creating it opens no connection: the pool connects, and the schema is
+ * brought up to date, when the first query needs the database.
  */
-export const passkeyBackend = (): Promise<PasskeyBackend> => {
+export const passkeyBackend = (): PasskeyBackend => {
 	if (!holder.passkeyBackend) {
-		holder.passkeyBackend = start().catch((error: unknown) => {
-			holder.passkeyBackend = undefined;
-			throw error;
+		const config = parseConfig(process.env, {
+			dev: process.env.NODE_ENV === "development",
+		});
+		holder.passkeyBackend = createPasskeyBackend(config, {
+			db: migrateOnFirstUse(connectDatabase(config.databaseUrl)),
 		});
 	}
 	return holder.passkeyBackend;
@@ -79,29 +67,38 @@ export const scheduleCleanup = (backend: PasskeyBackend): void => {
 };
 
 /**
- * Called by src/instrumentation.ts when the server starts, so a
- * self-hosted server with bad configuration stops right away instead of
- * failing on the first sign-in (BR-OPS-1). On Vercel there is no server to
- * stop: the problem is logged, and API requests fail until it is fixed.
+ * Called by src/instrumentation.ts when the server starts: bad
+ * configuration is reported right away instead of at the first sign-in
+ * (BR-OPS-1).
+ *
+ * A self-hosted server then also connects and migrates, and stops on bad
+ * configuration. On Vercel neither: there is no server to stop, and Next.js
+ * holds back the first request of every cold start until this returns — so
+ * waiting for the database here would delay even requests that do not need
+ * it. The first query connects instead.
  */
 export const startPasskeyBackend = async (): Promise<void> => {
 	// `next build` may run instrumentation too; the build needs no database.
 	if (process.env.NEXT_PHASE === "phase-production-build") {
 		return;
 	}
+	const onVercel = Boolean(process.env.VERCEL);
 	try {
-		await passkeyBackend();
+		const backend = passkeyBackend();
+		if (!onVercel) {
+			await backend.db.query("SELECT 1");
+		}
 	} catch (error) {
 		if (error instanceof ConfigError) {
 			// Just the list of problems, not a stack trace through compiled code.
 			console.error(error.message);
-			if (process.env.NODE_ENV === "production" && !process.env.VERCEL) {
+			if (process.env.NODE_ENV === "production" && !onVercel) {
 				process.exit(1);
 			}
 			return;
 		}
 		console.error(
-			"[passkey] The backend could not start; each request will try again:",
+			"[passkey] The database is unreachable; each request will try again:",
 			error,
 		);
 	}
