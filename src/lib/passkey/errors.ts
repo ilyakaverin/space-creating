@@ -74,11 +74,6 @@ export const describeError = (
 			return ceremony === "registration"
 				? "Passkey creation was cancelled or didn't complete. Try again."
 				: "Sign-in was cancelled or didn't complete. Try again.";
-		case "InvalidStateError":
-			// The authenticator holds one of the passkeys in excludeCredentials.
-			return ceremony === "registration"
-				? "This device already has a passkey here. Sign in with it instead."
-				: GENERIC;
 		case "NotSupportedError":
 			return "This device or browser can't use the kind of passkey this site asks for.";
 		case "SecurityError":

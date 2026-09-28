@@ -15,7 +15,6 @@ Plain TypeScript, no Next.js imports — each takes its dependencies as argument
 | `test-database.ts` | For unit tests: the same schema on PGlite, Postgres in WebAssembly |
 | `errors.ts` | `ApiError`: an error code plus its HTTP status, recognised across bundled copies of the module |
 | `validation.ts` | Checks every untrusted input: credential JSON, client data |
-| `device-credentials.ts` | The device cookie's list of this browser's passkeys, for one passkey per device |
 | `challenges.ts` | Issues challenges and redeems each exactly once, for the browser it was issued to |
 | `sessions.ts` | Session tokens: create, validate (with sliding expiry), revoke |
 | `accounts.ts` | Users and their stored passkeys |
@@ -29,7 +28,7 @@ Next.js glue:
 | File | Responsibility |
 |---|---|
 | `runtime.ts` | Creates the backend from `process.env` once per process (shared through `globalThis`); the database connects and migrates on its first query. Schedules the cleanup of expired rows with `after()` |
-| `cookies.ts` | Names and attributes of the session, flow and device cookies, on the store from `cookies()` |
+| `cookies.ts` | Names and attributes of the session and flow cookies, on the store from `cookies()` |
 | `http.ts` | `passkeyEndpoint` wrapper (Origin check, session cookie, client address, errors → JSON, no-cache headers), `readJson` |
 
 Outside this folder: `src/instrumentation.ts` (starts the backend when the server starts), the thin route handlers in `src/app/api/passkey/`, and `src/app/api/health/`.
@@ -47,7 +46,7 @@ Outside this folder: `src/instrumentation.ts` (starts the backend when the serve
    - in one transaction, raises the passkey's signature counter — refusing if it did not grow — and creates a session.
 5. **Cookie** — the route sets the httpOnly session cookie and answers `{ "user": … }`. From now on the endpoint wrapper resolves that cookie on every API request.
 
-Registration is the same shape: `startRegistration` lists the passkeys this browser already has in `excludeCredentials` (one per device), makes up the *pending* account — a random user handle and a name like "Traveller 7K3QX2" — and stores it with the challenge; `finishRegistration` verifies the new credential and only then creates the account, the passkey and the session, in one transaction.
+Registration is the same shape: `startRegistration` makes up the *pending* account — a random user handle and a name like "Traveller 7K3QX2" — and stores it with the challenge; `finishRegistration` verifies the new credential and only then creates the account, the passkey and the session, in one transaction.
 
 ## Running and testing
 

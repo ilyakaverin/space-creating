@@ -5,11 +5,6 @@
  * There is no form: creating a passkey creates an account whose name the
  * backend generates, and signing in lets the browser offer every passkey
  * this site has on the device.
- *
- * One passkey per device: once this browser has created or used one, only
- * sign-in is offered. "Create a passkey" comes back after a failed sign-in,
- * for someone whose passkey is gone; the authenticator still refuses to
- * create a second one if it holds the first (InvalidStateError).
  */
 "use client";
 
@@ -59,8 +54,6 @@ const failure = (cause: unknown, ceremony: Ceremony): Feedback => {
 export function PasskeyLogin() {
 	const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
 	const [user, setUser] = useState<User | null>(null);
-	const [devicePasskey, setDevicePasskey] = useState(false);
-	const [signInFailed, setSignInFailed] = useState(false);
 	const [feedback, setFeedback] = useState<Feedback>({
 		status: "loading",
 		message: "",
@@ -80,18 +73,11 @@ export function PasskeyLogin() {
 			);
 			setFeedback({ status: "verifying", message: "" });
 			setUser(await backend.verifyRegistration(credential));
-			setDevicePasskey(true);
 			setFeedback({
 				status: "success",
 				message: "Passkey created — you're signed in.",
 			});
 		} catch (cause) {
-			// Refused because the device already has a passkey here: back to
-			// offering sign-in only.
-			if (cause instanceof DOMException && cause.name === "InvalidStateError") {
-				setDevicePasskey(true);
-				setSignInFailed(false);
-			}
 			setFeedback(failure(cause, "registration"));
 		}
 	};
@@ -107,8 +93,6 @@ export function PasskeyLogin() {
 			credential = await getPasskey(await backend.authenticationOptions());
 			setFeedback({ status: "verifying", message: "" });
 			setUser(await backend.verifyAuthentication(credential));
-			setDevicePasskey(true);
-			setSignInFailed(false);
 			setFeedback({
 				status: "success",
 				message: "Signed in with your passkey.",
@@ -123,12 +107,7 @@ export function PasskeyLogin() {
 			) {
 				void signalUnknownCredential(backend.rpId, credential.id);
 			}
-			const next = failure(cause, "authentication");
-			// Maybe there is no passkey here after all: offer to create one.
-			if (next.status === "error") {
-				setSignInFailed(true);
-			}
-			setFeedback(next);
+			setFeedback(failure(cause, "authentication"));
 		}
 	};
 
@@ -156,7 +135,7 @@ export function PasskeyLogin() {
 			// Side by side: the session request is what the page waits for.
 			const [detected, session] = await Promise.all([
 				detectCapabilities(),
-				backend.session().then(
+				backend.currentUser().then(
 					(current) => ({ current }),
 					(cause: unknown) => ({ cause }),
 				),
@@ -170,10 +149,7 @@ export function PasskeyLogin() {
 			if ("cause" in session && detected.webauthn) {
 				setFeedback(failure(session.cause, "session"));
 			} else {
-				if ("current" in session) {
-					setUser(session.current.user);
-					setDevicePasskey(session.current.devicePasskey);
-				}
+				setUser("current" in session ? session.current : null);
 				setFeedback({ status: "idle", message: "" });
 			}
 		})();
@@ -205,18 +181,6 @@ export function PasskeyLogin() {
 					<button type="button" onClick={signOut} disabled={busy}>
 						Sign out
 					</button>
-				</>
-			) : devicePasskey ? (
-				<>
-					<button type="button" onClick={signIn} disabled={busy}>
-						Sign in with a passkey
-					</button>
-					{/* Below the sign-in button, so it does not move when this appears. */}
-					{signInFailed && (
-						<button type="button" onClick={createAccount} disabled={busy}>
-							Create a passkey
-						</button>
-					)}
 				</>
 			) : (
 				<>

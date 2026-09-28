@@ -5,7 +5,7 @@
  * cookie, so this side never holds a secret.
  */
 import { PasskeyError } from "./errors";
-import type { RelyingParty, SessionState, User } from "./types";
+import type { RelyingParty, User } from "./types";
 
 export interface HttpRelyingPartyOptions {
 	/** Where the passkey API lives, e.g. "/api/passkey". */
@@ -85,13 +85,8 @@ export const createHttpRelyingParty = ({
 		authenticationOptions: () => request("POST", "/authentication/options", {}),
 		verifyAuthentication: (credential) =>
 			userFrom(request("POST", "/authentication/verify", credential)),
-		session: async () => {
-			const { user, devicePasskey } = await request<Partial<SessionState>>(
-				"GET",
-				"/session",
-			);
-			return { user: user ?? null, devicePasskey: devicePasskey === true };
-		},
+		currentUser: async () =>
+			(await request<{ user: User | null }>("GET", "/session")).user,
 		signOut: () => request("DELETE", "/session"),
 	};
 };

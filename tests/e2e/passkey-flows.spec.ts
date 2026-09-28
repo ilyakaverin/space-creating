@@ -19,7 +19,6 @@ test("register, stay signed in across reloads, sign out and sign in again", asyn
 
 	await app.click("Sign out");
 	expect(await app.signedInAs()).toBeNull();
-	expect(await app.buttons()).toEqual(["Sign in with a passkey"]);
 	await app.click("Sign in with a passkey");
 	expect(await app.message()).toBe("Signed in with your passkey.");
 	expect(await app.signedInAs()).toBe(name);
@@ -90,77 +89,22 @@ test("signing up asks for no name, and a signed-in user can only sign out", asyn
 	expect(await app.buttons()).toEqual(["Sign out"]);
 });
 
-test("one passkey per device: once it has one, only sign-in is offered", async ({
-	app,
-}) => {
-	await app.goto();
-	await app.createAccount();
-	const user = await app.currentUser();
-	await app.click("Sign out");
-	expect(await app.buttons()).toEqual(["Sign in with a passkey"]);
-	await app.page.reload();
-	await app.settle();
-	expect(await app.buttons()).toEqual(["Sign in with a passkey"]);
-
-	// The registration options ask the authenticator to refuse a duplicate.
-	const [stored] = await queryDb<{ id: string }>(
-		"SELECT id FROM credentials WHERE user_id = $1",
-		user?.id,
-	);
-	const options = await app.api("/registration/options", { body: {} });
-	expect(options.body?.excludeCredentials).toEqual([
-		{ id: stored.id, type: "public-key", transports: ["internal"] },
-	]);
-});
-
-test("the authenticator refuses a second passkey on the same device", async ({
-	app,
-}) => {
-	await app.goto();
-	await app.createAccount();
-	await app.click("Sign out");
-
-	// A failed sign-in brings "Create a passkey" back, below the sign-in button.
-	await app.page.route(
-		"**/api/passkey/authentication/options",
-		(route) => route.fulfill({ status: 503 }),
-		{ times: 1 },
-	);
-	await app.click("Sign in with a passkey");
-	expect(await app.buttons()).toEqual([
-		"Sign in with a passkey",
-		"Create a passkey",
-	]);
-
-	await app.click("Create a passkey");
-	expect(await app.message()).toBe(
-		"This device already has a passkey here. Sign in with it instead.",
-	);
-	expect(await app.buttons()).toEqual(["Sign in with a passkey"]);
-	expect(await app.credentials()).toHaveLength(1);
-
-	await app.click("Sign in with a passkey");
-	expect(await app.message()).toBe("Signed in with your passkey.");
-});
-
-test("a device whose passkey is gone can create a new one", async ({ app }) => {
+test("each new passkey creates its own account", async ({ app }) => {
 	await app.goto();
 	await app.createAccount();
 	const first = await app.currentUser();
 	await app.click("Sign out");
-	// The user deleted the passkey in their password manager.
-	await app.clearAuthenticator();
-
-	await app.click("Sign in with a passkey");
-	expect(await app.message()).toBe(
-		"Sign-in was cancelled or didn't complete. Try again.",
-	);
-	await app.click("Create a passkey");
-	expect(await app.message()).toBe("Passkey created — you're signed in.");
+	await app.createAccount();
 	const second = await app.currentUser();
+
 	expect(second?.id).not.toBe(first?.id);
 	expect(second?.name).not.toBe(first?.name);
-	expect(await app.credentials()).toHaveLength(1);
+	expect(await app.credentials()).toHaveLength(2);
+	const users = await queryDb(
+		"SELECT 1 FROM users WHERE id = ANY($1::text[])",
+		[first?.id, second?.id],
+	);
+	expect(users).toHaveLength(2);
 });
 
 test("signing in without a passkey shows the neutral message", async ({
@@ -189,14 +133,4 @@ test("a passkey deleted on the server is reported and hidden through the Signal 
 	// The page called PublicKeyCredential.signalUnknownCredential(), and
 	// Chromium removed the passkey from the authenticator.
 	await expect.poll(() => app.credentials()).toHaveLength(0);
-
-	// A passkey that no longer exists does not count against the device:
-	// the options exclude nothing, and the browser forgets it.
-	const options = await app.api("/registration/options", { body: {} });
-	expect(options.body?.excludeCredentials).toEqual([]);
-	expect(
-		(await app.context.cookies()).some(({ name }) => name === "passkey-device"),
-	).toBe(false);
-	await app.click("Create a passkey");
-	expect(await app.message()).toBe("Passkey created — you're signed in.");
 });

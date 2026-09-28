@@ -44,8 +44,6 @@ export interface RequestContext {
 	sessionTokenHash: string | null;
 	/** From the flow cookie that ties challenges to this browser; null if absent. */
 	flowId: string | null;
-	/** From the device cookie: passkeys this browser created or signed in with (BR-REGO-9). */
-	deviceCredentialIds: string[];
 	/**
 	 * The client's IP address. A function because it throws when the
 	 * configured header is missing from a request; only the rate-limited
@@ -73,14 +71,6 @@ type WithFlow = RequestContext & { flowId: string };
 export interface SignedIn {
 	user: User;
 	session: NewSession;
-	/** The passkey used, for the device cookie. */
-	credentialId: string;
-}
-
-export interface RegistrationStart {
-	options: PublicKeyCredentialCreationOptionsJSON;
-	/** The device cookie's passkeys that still exist; the others can be forgotten. */
-	deviceCredentialIds: string[];
 }
 
 /**
@@ -150,9 +140,9 @@ const rejectCrossOrigin = (clientData: ClientData): void => {
  * the challenge until the passkey is verified (BR-REGO-4).
  */
 export const startRegistration = async (
-	{ accounts, challenges, config, limiter }: PasskeyBackend,
+	{ challenges, config, limiter }: PasskeyBackend,
 	context: WithFlow,
-): Promise<RegistrationStart> => {
+): Promise<PublicKeyCredentialCreationOptionsJSON> => {
 	await limiter.consume(
 		`options:${context.clientAddress()}`,
 		RATE_LIMITS.options,
@@ -162,14 +152,6 @@ export const startRegistration = async (
 		id: isoBase64URL.fromBuffer(randomBytes32()),
 		name: generateUserName(),
 	};
-	// One passkey per device (BR-REGO-9): an authenticator that holds one of
-	// this browser's passkeys refuses to create another (InvalidStateError).
-	// Only passkeys that still exist count, so a deleted account never
-	// blocks a new one.
-	const devicePasskeys =
-		context.deviceCredentialIds.length > 0
-			? await accounts.findCredentials(context.deviceCredentialIds)
-			: [];
 
 	const options = await generateRegistrationOptions({
 		rpName: config.rpName,
@@ -181,7 +163,7 @@ export const startRegistration = async (
 		challenge: randomBytes32(),
 		timeout: CEREMONY_TIMEOUT_MS,
 		attestationType: "none",
-		excludeCredentials: devicePasskeys,
+		// No excludeCredentials: the account is new, so it has no passkeys yet.
 		// Discoverable passkeys ("resident keys") store the user handle on the
 		// authenticator, which is what lets sign-in work without a username.
 		// No authenticatorAttachment, so phones and security keys stay possible
@@ -199,10 +181,7 @@ export const startRegistration = async (
 		type: "registration",
 		pendingUser: user,
 	});
-	return {
-		options,
-		deviceCredentialIds: devicePasskeys.map(({ id }) => id),
-	};
+	return options;
 };
 
 /** POST /registration/verify (BR-REGV). Stores the passkey and signs its user in. */
@@ -308,7 +287,7 @@ export const finishRegistration = async (
 		credentialId: info.credential.id,
 		userVerified: info.userVerified,
 	});
-	return { user, session, credentialId: info.credential.id };
+	return { user, session };
 };
 
 // ---------------------------------------------------------------------------
@@ -443,7 +422,7 @@ export const finishAuthentication = async (
 		credentialId: stored.id,
 		userVerified: info.userVerified,
 	});
-	return { user: owner, session, credentialId: stored.id };
+	return { user: owner, session };
 };
 
 // ---------------------------------------------------------------------------
