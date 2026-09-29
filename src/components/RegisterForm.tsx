@@ -1,29 +1,21 @@
 /**
- * The login page: one username field, "Sign in" as the main action and
- * "Sign up" below it. Either way, the browser then goes to the home page.
+ * The register page's form: a username and "Sign up", which creates the
+ * account with a passkey and then goes to the home page.
  *
- * Sign in with a username offers only that account's passkeys; with the
- * field empty, the browser offers every passkey it holds for this site.
- * Sign up needs a username, and a taken one is refused before any prompt
- * opens — one username, one account, one passkey, so a device can never
- * hold two passkeys for the same account.
+ * A taken username is refused before any prompt opens — one username, one
+ * account, one passkey, so a device can never hold two passkeys for the
+ * same account.
  */
 "use client";
 
-import {
-	type AuthenticationResponseJSON,
-	PasskeyError,
-	createPasskey,
-	getPasskey,
-	signalUnknownCredential,
-} from "@/lib/passkey";
+import { PasskeyError, createPasskey } from "@/lib/passkey";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useEffect, useState } from "react";
 import { StatusLine } from "./StatusLine";
 import { failure, isBusy, usePasskeySession } from "./usePasskeySession";
 import "./passkey.css";
 
-export function LoginForm() {
+export function RegisterForm() {
 	const router = useRouter();
 	const { capabilities, user, setUser, feedback, setFeedback, relyingParty } =
 		usePasskeySession();
@@ -36,7 +28,8 @@ export function LoginForm() {
 		}
 	}, [user, router]);
 
-	const signUp = async () => {
+	const signUp = async (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
 		const backend = relyingParty.current;
 		if (!backend) {
 			return;
@@ -64,37 +57,6 @@ export function LoginForm() {
 		}
 	};
 
-	/** The form's submit, so Enter in the field signs in: the main action. */
-	const signIn = async (event: FormEvent<HTMLFormElement>) => {
-		event.preventDefault();
-		const backend = relyingParty.current;
-		if (!backend) {
-			return;
-		}
-		const name = userName.trim();
-		setFeedback({ status: "pending", message: "" });
-		let credential: AuthenticationResponseJSON | null = null;
-		try {
-			// Rejects an unknown username before any authenticator prompt opens.
-			credential = await getPasskey(
-				await backend.authenticationOptions(name ? { userName: name } : {}),
-			);
-			setFeedback({ status: "verifying", message: "" });
-			setUser(await backend.verifyAuthentication(credential));
-		} catch (cause) {
-			// The passkey belongs to no account here (any more): let the password
-			// manager hide it, so it is not offered again.
-			if (
-				credential &&
-				cause instanceof PasskeyError &&
-				cause.code === "unknown_credential"
-			) {
-				void signalUnknownCredential(backend.rpId, credential.id);
-			}
-			setFeedback(failure(cause, "authentication"));
-		}
-	};
-
 	// Signed in, the page is on its way home: it stays busy until it is gone.
 	const busy = isBusy(feedback.status) || user !== null;
 
@@ -109,7 +71,7 @@ export function LoginForm() {
 				</p>
 			) : (
 				<>
-					<form onSubmit={signIn}>
+					<form onSubmit={signUp}>
 						<label>
 							Username
 							<input
@@ -118,23 +80,15 @@ export function LoginForm() {
 								autoCapitalize="none"
 								spellCheck={false}
 								maxLength={64}
+								required
 								value={userName}
 								onChange={(event) => setUserName(event.target.value)}
 							/>
 						</label>
 						<button type="submit" className="primary" disabled={busy}>
-							Sign in
+							Sign up
 						</button>
 					</form>
-					{/* An action, so a button — dressed as a link, the lesser choice. */}
-					<button
-						type="button"
-						className="link"
-						onClick={signUp}
-						disabled={busy}
-					>
-						Sign up
-					</button>
 					{capabilities?.webauthn && !capabilities.platformAuthenticator && (
 						<p className="message">
 							No built-in authenticator found — you can still use a phone or a
@@ -143,6 +97,11 @@ export function LoginForm() {
 					)}
 				</>
 			)}
+			<noscript>
+				<p className="message error">
+					Passkeys need JavaScript — turn it on to sign in.
+				</p>
+			</noscript>
 			<StatusLine {...feedback} />
 		</section>
 	);

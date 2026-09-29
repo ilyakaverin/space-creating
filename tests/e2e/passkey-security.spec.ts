@@ -10,6 +10,7 @@ import {
 	apiClient,
 	expect,
 	openApp,
+	queryDb,
 	test,
 	uniqueName,
 } from "./fixtures";
@@ -87,6 +88,34 @@ test("an assertion claiming another account's user handle is rejected", async ({
 	const result = await app.api(VERIFY, { body: assertion });
 	expect(result.status).toBe(400);
 	expect(result.body?.code).toBe("verification_failed");
+});
+
+test("sign-in options for a username list only its passkeys and refuse unknown names", async ({
+	app,
+}) => {
+	const name = await app.createAccount();
+	const user = await app.currentUser();
+	const [stored] = await queryDb<{ id: string }>(
+		"SELECT id FROM credentials WHERE user_id = $1",
+		user?.id,
+	);
+	const client = await apiClient();
+	const post = (data: unknown) =>
+		client.post("/api/passkey/authentication/options", {
+			headers: { origin: BASE_URL, "content-type": "application/json" },
+			data,
+		});
+
+	const named = await post({ userName: name.toUpperCase() });
+	expect(named.status()).toBe(200);
+	expect((await named.json()).allowCredentials).toEqual([
+		{ id: stored.id, type: "public-key", transports: ["internal"] },
+	]);
+	expect((await (await post({})).json()).allowCredentials).toEqual([]);
+	const unknown = await post({ userName: "nobody-here" });
+	expect(unknown.status()).toBe(404);
+	expect((await unknown.json()).code).toBe("unknown_user");
+	await client.dispose();
 });
 
 test("a sign-in for a typed username only accepts that account's passkey", async ({
