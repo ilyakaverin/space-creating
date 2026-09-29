@@ -26,11 +26,9 @@
 
 /*
  * The site's button: a light outline on the black page, in the page's
- * pixel font, faded in when it appears. Hovering fills it in. A link that
- * leads to an action (`.button`) looks the same.
+ * pixel font, faded in when it appears. Hovering fills it in.
  */
-.passkey button,
-.passkey .button {
+.passkey button {
 	display: flex;
 	justify-content: center;
 	gap: 5px;
@@ -46,8 +44,7 @@
 	transition: background-color 0.15s, color 0.15s;
 }
 
-.passkey button:hover:not(:disabled),
-.passkey .button:hover {
+.passkey button:hover:not(:disabled) {
 	background-color: var(--light);
 	color: var(--black);
 }
@@ -63,9 +60,12 @@
 	color: var(--light);
 }
 
-/* A lesser action, dressed as a link: underlined text, no outline. */
+/* A lesser action, shown as a link: underlined text, no outline. */
 .passkey .link {
 	align-self: center;
+	font: inherit;
+	cursor: pointer;
+	animation: passkey-fade-in 0.5s;
 	padding: 0.25rem;
 	border: none;
 	background: none;
@@ -92,7 +92,7 @@
 }
 
 .passkey button:focus-visible,
-.passkey .button:focus-visible,
+.passkey .link:focus-visible,
 .passkey input:focus-visible {
 	outline: 2px solid var(--orange);
 	outline-offset: 3px;
@@ -125,7 +125,7 @@
 
 @media (prefers-reduced-motion: reduce) {
 	.passkey button,
-	.passkey .button,
+	.passkey .link,
 	.passkey input {
 		animation: none;
 		transition: none;

@@ -4,13 +4,13 @@
  */
 import { expect, openApp, queryDb, test, uniqueName } from "./fixtures";
 
-test("register on the login page, stay signed in across reloads, sign out and sign in again", async ({
+test("sign up on /register, stay signed in across reloads, sign out and sign in on the home page", async ({
 	app,
 }) => {
 	await app.goto();
-	expect(await app.actions()).toEqual(["Log in"]);
-	await app.click("Log in");
-	expect(new URL(app.page.url()).pathname).toBe("/login");
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
+	await app.click("Sign up");
+	expect(new URL(app.page.url()).pathname).toBe("/register");
 
 	const name = await app.createAccount();
 	expect(new URL(app.page.url()).pathname).toBe("/");
@@ -22,9 +22,10 @@ test("register on the login page, stay signed in across reloads, sign out and si
 
 	await app.click("Sign out");
 	expect(await app.signedInAs()).toBeNull();
-	expect(await app.actions()).toEqual(["Log in"]);
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
 
-	await app.signIn();
+	// Straight from the home page: no username, the passkey says who you are.
+	await app.click("Sign in");
 	expect(new URL(app.page.url()).pathname).toBe("/");
 	expect(await app.signedInAs()).toBe(name);
 
@@ -68,7 +69,7 @@ test("nothing is shown until the session is known", async ({ app }) => {
 	};
 
 	await loadWhileHeld();
-	expect(await app.actions()).toEqual(["Log in"]);
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
 
 	const name = await app.createAccount();
 	await loadWhileHeld();
@@ -76,10 +77,10 @@ test("nothing is shown until the session is known", async ({ app }) => {
 	expect(await app.actions()).toEqual(["Sign out"]);
 });
 
-test("the login page asks for a username; signed in, only sign-out is offered", async ({
+test("/register asks for a username; signed in, only sign-out is offered", async ({
 	app,
 }) => {
-	await app.goto("/login");
+	await app.goto("/register");
 	expect(
 		await app.page
 			.locator("section.passkey input")
@@ -87,60 +88,22 @@ test("the login page asks for a username; signed in, only sign-out is offered", 
 				inputs.map((input) => input.getAttribute("name")),
 			),
 	).toEqual(["username"]);
-	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
+	expect(await app.actions()).toEqual(["Sign up"]);
 
 	await app.createAccount();
 	expect(await app.actions()).toEqual(["Sign out"]);
-	// Signed in, the login page has nothing to offer and sends you home.
-	await app.page.goto("/login");
+	// Signed in, the register page has nothing to offer and sends you home.
+	await app.page.goto("/register");
 	await app.page.waitForURL("/");
 	await app.settle();
 	expect(await app.actions()).toEqual(["Sign out"]);
 });
 
-test("signing in with a username offers only that account's passkey", async ({
-	app,
-}) => {
-	const first = await app.createAccount();
-	await app.click("Sign out");
-	const second = await app.createAccount();
-	await app.click("Sign out");
-	expect(await app.credentials()).toHaveLength(2);
-
-	for (const name of [first, second, first.toUpperCase()]) {
-		await app.signIn(name);
-		expect(await app.signedInAs()).toBe(name === second ? second : first);
-		await app.click("Sign out");
-	}
-});
-
-test("signing in with an unknown username says so before any prompt", async ({
-	app,
-}) => {
-	await app.createAccount();
-	await app.click("Sign out");
-	await app.goto("/login");
-	// Counts the WebAuthn prompts the page opens from here on.
-	await app.page.evaluate(() => {
-		const page = window as unknown as { prompts: number };
-		page.prompts = 0;
-		const get = navigator.credentials.get.bind(navigator.credentials);
-		navigator.credentials.get = (options) => {
-			page.prompts += 1;
-			return get(options);
-		};
-	});
-	await app.page.fill('input[name="username"]', "nobody-here");
-	await app.click("Sign in");
-	expect(await app.message()).toBe(
-		"No account has that username. Sign up to create one.",
-	);
-	expect(
-		await app.page.evaluate(
-			() => (window as unknown as { prompts: number }).prompts,
-		),
-	).toBe(0);
-	expect(new URL(app.page.url()).pathname).toBe("/login");
+test("the old /login address leads to the home page", async ({ app }) => {
+	await app.page.goto("/login");
+	await app.page.waitForURL("/");
+	await app.settle();
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
 });
 
 test("the same account never gets a second passkey on a device", async ({
@@ -151,9 +114,9 @@ test("the same account never gets a second passkey on a device", async ({
 
 	await app.createAccount(name);
 	expect(await app.message()).toBe(
-		"That username is taken. If it's yours, sign in with its passkey.",
+		"That username is taken. If it's yours, sign in on the home page.",
 	);
-	expect(new URL(app.page.url()).pathname).toBe("/login");
+	expect(new URL(app.page.url()).pathname).toBe("/register");
 	expect(await app.credentials()).toHaveLength(1);
 });
 
@@ -166,7 +129,7 @@ test("a taken username is refused before any authenticator prompt, whatever its 
 	const other = await openApp(browser);
 	await other.createAccount(name.toUpperCase());
 	expect(await other.message()).toBe(
-		"That username is taken. If it's yours, sign in with its passkey.",
+		"That username is taken. If it's yours, sign in on the home page.",
 	);
 	expect(await other.credentials()).toHaveLength(0);
 	await other.context.close();
@@ -190,7 +153,7 @@ test("signing in without a passkey shows the neutral message", async ({
 	expect(await app.message()).toBe(
 		"Sign-in was cancelled or didn't complete. Try again.",
 	);
-	expect(new URL(app.page.url()).pathname).toBe("/login");
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
 });
 
 test("a passkey deleted on the server is reported and hidden through the Signal API", async ({

@@ -33,7 +33,7 @@ const RELYING_PARTY_MESSAGES = new Map<string, string>([
 	["invalid_username", "Enter a username of up to 64 characters."],
 	[
 		"username_taken",
-		"That username is taken. If it's yours, sign in with its passkey.",
+		"That username is taken. If it's yours, sign in on the home page.",
 	],
 	["unknown_user", "No account has that username. Sign up to create one."],
 	["rate_limited", "Too many attempts. Wait a minute and try again."],

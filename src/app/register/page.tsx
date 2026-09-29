@@ -1,13 +1,13 @@
-import { LoginForm } from "@/components/LoginForm";
+import { RegisterForm } from "@/components/RegisterForm";
 import type { Metadata } from "next";
 import Link from "next/link";
 import styles from "../page.module.css";
 
 export const metadata: Metadata = {
-	title: "log in · creating space",
+	title: "sign up · creating space",
 };
 
-export default function Login() {
+export default function Register() {
 	return (
 		<main className={styles.main}>
 			<Link href="/" aria-label="creating space home">
@@ -20,7 +20,7 @@ export default function Login() {
 					height={32}
 				/>
 			</Link>
-			<LoginForm />
+			<RegisterForm />
 		</main>
 	);
 }

@@ -12,11 +12,11 @@ The words **MUST**, **SHOULD** and **MAY** are used as in RFC 2119.
 
 - The frontend (`src/lib/passkey/http-relying-party.ts`) implements the client side of the contract and always talks to this backend; nothing is stored in the browser. §12 lists optional follow-ups.
 - The backend owns everything security-relevant: challenges, attestation and assertion verification, credential storage, accounts and sessions. The frontend only forwards opaque WebAuthn data.
-- The home page shows who is signed in, with "Sign out", or a "Log in" link. The login page (`/login`) has a username field, "Sign in" as the main action and "Sign up" below it, styled as a link. "Sign in" with a username offers only that account's passkeys; with the field empty, the browser offers every passkey the device holds for this site. A signed-in user can only sign out: there is no "add a passkey" and no account deletion.
+- The home page shows who is signed in, with "Sign out". Signed out, it offers "Sign in" — straight to the browser's passkey prompt, no username: the browser offers every passkey the device holds for this site — and a "Sign up" link to `/register`, which has a username field and "Sign up". A signed-in user can only sign out: there is no "add a passkey" and no account deletion. (`/login`, the previous page, redirects home.)
 - One username, one account, one passkey. A taken username is refused before any prompt, so a device can never hold two passkeys for the same account. A device can still hold passkeys for *different* accounts: WebAuthn gives a site no way to ask a device which passkeys it holds, so nothing short of tracking the device could stop that.
 
 ```
-Browser ── Account.tsx (/) · LoginForm.tsx (/login) → http-relying-party.ts
+Browser ── Account.tsx (/) · RegisterForm.tsx (/register) → http-relying-party.ts
    │  JSON over HTTPS, same origin, cookies
    ▼
 Next.js server (Vercel Functions, or next start)
@@ -158,7 +158,7 @@ Request: `{ "userName"?: string }`, JSON either way (BR-GEN-2). No session neede
 
 - **BR-AUTHO-1** Response `200` — `PublicKeyCredentialRequestOptionsJSON`: `challenge` (§5), `rpId`, `allowCredentials`, `userVerification: "preferred"`, `timeout: 300000`.
 - **BR-AUTHO-2** With `userName` (validated as in BR-REGO-1, matched as in BR-REGO-2): `allowCredentials` lists that account's passkeys, so the browser offers only those, and the challenge records the account (BR-CH-2). No such account → `404 unknown_user`, before any prompt. Without `userName`: `allowCredentials: []`, so any discoverable passkey for this RP may answer and names its own account (BR-AUTHV-4).
-- **BR-AUTHO-3** The frontend calls this when the user submits the login form ("Sign in"), right before opening the prompt, with the username if one was typed. No autofill (conditional UI) for now.
+- **BR-AUTHO-3** The frontend calls this, without a username, when the user clicks "Sign in" on the home page, right before opening the prompt. The `userName` form (BR-AUTHO-2) is part of the API but not used by the current UI. No autofill (conditional UI) for now.
 
 ### 4.4 `POST /authentication/verify`
 Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authenticatorAttachment`, `clientExtensionResults`, `response.clientDataJSON`, `response.authenticatorData`, `response.signature`, `response.userHandle`).
@@ -359,14 +359,13 @@ What the merged frontend relies on; each item is also a requirement above.
 
 - **BR-TEST-1** Unit tests (Vitest, on PGlite) cover: configuration, including the Vercel origin and the database URL; migrations, including migration 2 on accounts from before usernames; username validation and case-insensitive uniqueness; credential storage round-trips and transaction rollback; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, sliding expiry and expiry cleanup; rate limits, also under concurrency; error-to-status mapping; counter logic.
 - **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` on a throwaway Postgres database named by `E2E_DATABASE_URL`, and cover every flow in FR-TEST-4:
-  - "Log in" → register on `/login` → home, reload (still signed in), sign out, sign in with the button;
+  - "Sign up" → register on `/register` → home, reload (still signed in), sign out, "Sign in" on the home page; `/login` redirects home;
   - nothing is shown until `GET /session` answers;
-  - the login page has one field, the username, then "Sign in" and "Sign up"; signed in, "Sign out" is the only action, and `/login` sends you home;
-  - sign-in with a username (in any case) offers only that account's passkey; an unknown username is refused before any prompt;
+  - `/register` has one field, the username, and "Sign up"; signed in, "Sign out" is the only action, and `/register` sends you home;
   - the same account never gets a second passkey on a device; a taken username (in any case) is refused before any prompt; a blank one too;
   - sign in when the authenticator has no passkey → neutral message;
   - credential deleted from the database → `404 unknown_credential`, and the virtual authenticator loses the passkey through the Signal API.
-- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; a sign-in for a typed username answered with another account's passkey; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration options carry the typed name and a random handle, and refuse invalid names; a signed-out session token is rejected server-side; cookie attributes asserted.
+- **BR-TEST-3** Negative security tests: replayed assertion; challenge from another flow cookie; expired challenge (fake clock) → `challenge_expired`; tampered signature; `userHandle` of another user; sign-in options for a username list only its passkeys (in any case) and refuse an unknown name; a sign-in for a typed username answered with another account's passkey; counter regression; wrong `Origin` → `403`; `text/plain` POST → `415`; oversized body → `413`; rate limit → `429`; registration options carry the typed name and a random handle, and refuse invalid names; a signed-out session token is rejected server-side; cookie attributes asserted.
 - **BR-TEST-4** Manual checks: Chrome, Safari and Firefox; a platform authenticator and a security key; the real deployed domain (FR-TEST-1, -2, -5).
 
 ---
