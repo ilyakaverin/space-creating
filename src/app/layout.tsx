@@ -1,4 +1,3 @@
-import { ServiceWorkerRegistration } from "@/components/ServiceWorkerRegistration";
 import type { Metadata, Viewport } from "next";
 import localFont from "next/font/local";
 import type { ReactNode } from "react";
@@ -20,7 +19,6 @@ const bios = localFont({
 export const metadata: Metadata = {
 	title: "creating space",
 	description: "creating space",
-	manifest: "/favicon/site.webmanifest",
 	icons: {
 		icon: [
 			{ url: "/favicon/favicon-32x32.png", sizes: "32x32", type: "image/png" },
@@ -33,14 +31,6 @@ export const metadata: Metadata = {
 			color: "#5bbad5",
 		},
 	},
-	appleWebApp: {
-		capable: true,
-		title: "creating space",
-		statusBarStyle: "black",
-	},
-	other: {
-		"msapplication-TileColor": "#da532c",
-	},
 };
 
 export const viewport: Viewport = {
@@ -52,10 +42,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
 	return (
 		<html lang="en" className={bios.variable}>
-			<body>
-				{children}
-				<ServiceWorkerRegistration />
-			</body>
+			<body>{children}</body>
 		</html>
 	);
 }

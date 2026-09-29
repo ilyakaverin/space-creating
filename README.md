@@ -14,7 +14,7 @@ Tech stack: next.js 16 (app router, turbopack), react 19, typescript, biome
 
 The page is prerendered at build time; `next start` serves it and the API routes from one Node server.
 
-Installable as a PWA: `public/favicon/site.webmanifest` plus `public/service-worker.js`. The worker caches the page and the files it names when it installs, serves Next.js's content-hashed files from its cache, and keeps the last page as an offline fallback; `/api/` is never cached. It is only registered in production builds, so test it with `pnpm build && pnpm start` over https or localhost.
+The site is not a PWA and registers no service worker. `public/service-worker.js` only cleans up after the one earlier versions installed: browsers that still have it load this file on their next visit, and it deletes its caches and unregisters itself. Once old visitors have been back, the file and its header in `next.config.ts` can go.
 
 ## Passkeys
 

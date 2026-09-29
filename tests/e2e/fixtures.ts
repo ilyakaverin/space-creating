@@ -95,7 +95,6 @@ export interface App {
 export const openApp = async (browser: Browser): Promise<App> => {
 	const context = await browser.newContext({
 		baseURL: BASE_URL,
-		serviceWorkers: "block",
 		extraHTTPHeaders: { [CLIENT_IP_HEADER]: randomUUID() },
 	});
 	const page = await context.newPage();

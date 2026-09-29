@@ -152,6 +152,47 @@ test("/register asks for a username; signed in, only sign-out is offered", async
 	expect(await app.actions()).toEqual(["Sign out"]);
 });
 
+test("the site is no longer a PWA, and removes the service worker it used to install", async ({
+	app,
+}) => {
+	await app.goto();
+	expect(await app.page.locator('link[rel="manifest"]').count()).toBe(0);
+	expect(
+		await app.page.evaluate(
+			async () => (await navigator.serviceWorker.getRegistrations()).length,
+		),
+	).toBe(0);
+
+	// A browser that installed the old worker: caches it filled, and the
+	// worker at /service-worker.js, which it will find updated on its next visit.
+	const left = await app.page.evaluate(async () => {
+		await (await caches.open("pages-v1")).put("/", new Response("old page"));
+		await (await caches.open("static-v1")).put("/x.js", new Response("old"));
+		await navigator.serviceWorker.register("/service-worker.js");
+		for (let tries = 0; tries < 50; tries++) {
+			const registrations = await navigator.serviceWorker.getRegistrations();
+			if (registrations.length === 0) {
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		}
+		return {
+			registrations: (await navigator.serviceWorker.getRegistrations()).length,
+			caches: await caches.keys(),
+		};
+	});
+	expect(left).toEqual({ registrations: 0, caches: [] });
+
+	// And the page itself registers nothing again.
+	await app.page.reload();
+	await app.settle();
+	expect(
+		await app.page.evaluate(
+			async () => (await navigator.serviceWorker.getRegistrations()).length,
+		),
+	).toBe(0);
+});
+
 test("the old /login address leads to the home page", async ({ app }) => {
 	await app.page.goto("/login");
 	await app.page.waitForURL("/");
