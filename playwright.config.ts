@@ -27,8 +27,6 @@ export default defineConfig({
 	use: {
 		baseURL: BASE_URL,
 		browserName: "chromium",
-		// Keep every request visible to the tests instead of a service worker.
-		serviceWorkers: "block",
 	},
 	webServer: {
 		command: "pnpm build && pnpm start",

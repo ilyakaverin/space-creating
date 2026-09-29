@@ -16,8 +16,9 @@ const config: NextConfig = {
 	async headers() {
 		return [
 			{
-				// Browsers check this file for updates on navigation; it must never
-				// come from a cache, or a fixed worker would reach nobody.
+				// The worker that removes the site's old service worker (see the
+				// file). Browsers check it for updates on navigation; it must never
+				// come from a cache, or it would reach nobody.
 				source: "/service-worker.js",
 				headers: [
 					{ key: "Cache-Control", value: "no-cache" },
