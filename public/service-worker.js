@@ -24,9 +24,36 @@ const MAX_STATIC_ENTRIES = 200;
 const isStatic = (url) => url.pathname.startsWith("/_next/static/");
 const isPublic = (url) => url.pathname.startsWith("/favicon/");
 
+/**
+ * Only plain successful answers are kept. Safari refuses to show a page
+ * from a response that was redirected, so such a copy would break the
+ * offline fallback.
+ */
+const cacheable = (response) => response.ok && !response.redirected;
+
+/**
+ * Saving a copy is a bonus: a full or restricted storage (private windows,
+ * low disk space) must never turn a good answer into a failed page. So the
+ * write runs beside the response, and its errors are only logged.
+ */
+const keepCopy = (event, cacheName, request, response, afterPut) => {
+	const copy = response.clone();
+	event.waitUntil(
+		caches
+			.open(cacheName)
+			.then(async (cache) => {
+				await cache.put(request, copy);
+				await afterPut?.(cache);
+			})
+			.catch((error) =>
+				console.warn("[service worker] cache write failed", error),
+			),
+	);
+};
+
 const precache = async () => {
 	const response = await fetch("/", { cache: "no-cache" });
-	if (!response.ok) {
+	if (!cacheable(response)) {
 		return;
 	}
 	const html = await response.clone().text();
@@ -66,22 +93,33 @@ self.addEventListener("activate", (event) => {
 	);
 });
 
-/** Pages are fetched fresh, with the last good copy as the offline fallback. */
-const fromNetworkFirst = async (request) => {
-	const cache = await caches.open(PAGE_CACHE);
+/**
+ * Pages are fetched fresh, with the last good copy as the offline fallback.
+ * Only a failed fetch — no network — falls back; nothing else can make the
+ * page fail here.
+ */
+const fromNetworkFirst = async (event) => {
+	const { request } = event;
+	let response;
 	try {
-		const response = await fetch(request);
-		if (response.ok) {
-			await cache.put(request, response.clone());
-		}
-		return response;
+		response = await fetch(request);
 	} catch (error) {
-		const cached = (await cache.match(request)) ?? (await cache.match("/"));
+		const cached = await caches
+			.open(PAGE_CACHE)
+			.then(
+				async (cache) =>
+					(await cache.match(request)) ?? (await cache.match("/")),
+			)
+			.catch(() => undefined);
 		if (cached) {
 			return cached;
 		}
 		throw error;
 	}
+	if (cacheable(response)) {
+		keepCopy(event, PAGE_CACHE, request, response);
+	}
+	return response;
 };
 
 /** Cache keys keep insertion order, so the first ones are the oldest. */
@@ -91,26 +129,30 @@ const trim = async (cache, maxEntries) => {
 	await Promise.all(excess.map((key) => cache.delete(key)));
 };
 
-const fromCacheFirst = async (request) => {
-	const cache = await caches.open(STATIC_CACHE);
-	const cached = await cache.match(request);
+const fromCacheFirst = async (event) => {
+	const { request } = event;
+	const cached = await caches
+		.match(request, { cacheName: STATIC_CACHE })
+		.catch(() => undefined);
 	if (cached) {
 		return cached;
 	}
 	const response = await fetch(request);
-	if (response.ok) {
-		await cache.put(request, response.clone());
-		await trim(cache, MAX_STATIC_ENTRIES);
+	if (cacheable(response)) {
+		keepCopy(event, STATIC_CACHE, request, response, (cache) =>
+			trim(cache, MAX_STATIC_ENTRIES),
+		);
 	}
 	return response;
 };
 
 const fromCacheThenRefresh = async (event) => {
-	const cache = await caches.open(PUBLIC_CACHE);
-	const cached = await cache.match(event.request);
-	const refresh = fetch(event.request).then(async (response) => {
-		if (response.ok) {
-			await cache.put(event.request, response.clone());
+	const cached = await caches
+		.match(event.request, { cacheName: PUBLIC_CACHE })
+		.catch(() => undefined);
+	const refresh = fetch(event.request).then((response) => {
+		if (cacheable(response)) {
+			keepCopy(event, PUBLIC_CACHE, event.request, response);
 		}
 		return response;
 	});
@@ -132,9 +174,9 @@ self.addEventListener("fetch", (event) => {
 		return;
 	}
 	if (request.mode === "navigate") {
-		event.respondWith(fromNetworkFirst(request));
+		event.respondWith(fromNetworkFirst(event));
 	} else if (isStatic(url)) {
-		event.respondWith(fromCacheFirst(request));
+		event.respondWith(fromCacheFirst(event));
 	} else if (isPublic(url)) {
 		event.respondWith(fromCacheThenRefresh(event));
 	}

@@ -25,6 +25,9 @@ export interface Feedback {
 
 export const IDLE: Feedback = { status: "idle", message: "" };
 
+/** How long the page may stay empty while loading before it says "Loading…". */
+const SLOW_AFTER_MS = 1_000;
+
 export const isBusy = (status: Status): boolean =>
 	status === "loading" || status === "pending" || status === "verifying";
 
@@ -48,6 +51,15 @@ export function usePasskeySession() {
 	useEffect(() => {
 		// React may mount twice in development; the abandoned run stops at its next await.
 		let active = true;
+		// Fast answers show nothing in between; a slow one (a cold server, a
+		// sleeping database) says so, instead of looking like a broken page.
+		const slow = setTimeout(() => {
+			setFeedback((current) =>
+				current.status === "loading"
+					? { status: "loading", message: "Loading…" }
+					: current,
+			);
+		}, SLOW_AFTER_MS);
 		void (async () => {
 			const backend = createRelyingParty();
 			relyingParty.current = backend;
@@ -59,6 +71,7 @@ export function usePasskeySession() {
 					(cause: unknown) => ({ cause }),
 				),
 			]);
+			clearTimeout(slow);
 			if (!active) {
 				return;
 			}
@@ -74,6 +87,7 @@ export function usePasskeySession() {
 		})();
 		return () => {
 			active = false;
+			clearTimeout(slow);
 			abortPendingRequest();
 		};
 	}, []);

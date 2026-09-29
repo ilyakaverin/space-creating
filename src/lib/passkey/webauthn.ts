@@ -30,14 +30,33 @@ const statics = (): PublicKeyCredentialStatics | undefined =>
 		? (window.PublicKeyCredential as unknown as PublicKeyCredentialStatics)
 		: undefined;
 
-/** A missing or throwing method reads as "not supported", never as an error. */
+/**
+ * How long a capability query may take. Some in-app browsers (the ones
+ * Telegram or Instagram open links in, for example) return a promise from
+ * these queries that never settles; waiting for it would keep the page
+ * blank forever.
+ */
+const QUERY_TIMEOUT_MS = 1_000;
+
+/**
+ * A missing, throwing or hanging method reads as "not supported", never as
+ * an error.
+ */
 const attempt = async <T>(
 	query: () => Promise<T> | undefined,
 ): Promise<T | undefined> => {
+	let timer: number | undefined;
 	try {
-		return await query();
+		return await Promise.race([
+			query(),
+			new Promise<undefined>((resolve) => {
+				timer = window.setTimeout(() => resolve(undefined), QUERY_TIMEOUT_MS);
+			}),
+		]);
 	} catch {
 		return undefined;
+	} finally {
+		window.clearTimeout(timer);
 	}
 };
 

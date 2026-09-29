@@ -99,6 +99,11 @@ export function Account() {
 					</Link>
 				</>
 			)}
+			<noscript>
+				<p className="message error">
+					Passkeys need JavaScript — turn it on to sign in.
+				</p>
+			</noscript>
 			<StatusLine {...feedback} />
 		</section>
 	);

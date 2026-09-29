@@ -173,7 +173,7 @@ Request: the assertion as produced by `toJSON()` (`id`, `rawId`, `type`, `authen
 - **BR-AUTHV-8** If the challenge records an account (BR-AUTHO-2), the passkey MUST belong to it, otherwise → `400 verification_failed`. The browser only offers that account's passkeys, but a modified client could answer with another.
 
 ### 4.5 `GET /session`
-- **BR-SES-1** Always `200`: `{ "user": User }` for a live session, otherwise `{ "user": null }`. Never `401` — the frontend calls this on every page load and would show an error. It shows no buttons until this answers, so without a session cookie it answers without touching the database (BR-OPS-1).
+- **BR-SES-1** Always `200`: `{ "user": User }` for a live session, otherwise `{ "user": null }`. Never `401` — the frontend calls this on every page load and would show an error. It shows no buttons until this answers, so without a session cookie it answers without touching the database (BR-OPS-1). After 1 s it shows "Loading…"; after 15 s without an answer it gives up with "Couldn't reach the server" and shows the buttons, so the page is never left blank. Its WebAuthn capability checks are likewise given up after 1 s: some in-app browsers never settle them.
 - **BR-SES-2** An unknown or expired session cookie is cleared in the response.
 - **BR-SES-3** MAY extend the session (sliding expiry, BR-COOK-5).
 
@@ -316,7 +316,7 @@ Postgres. Times are `timestamptz`; the application passes its own clock's time, 
 - **BR-OPS-3** The database is Neon's: it keeps a restore history for point-in-time recovery, as long as the plan allows. Losing the data orphans every passkey.
 - **BR-OPS-4** The client address comes from `X-Forwarded-For`. On Vercel that header holds the client's address, set by Vercel itself, so the default (the rightmost entry) is right. A self-hosted server runs behind a reverse proxy that appends the client address to it: Next.js fills the header from the connection only when a request has none, so without a proxy a client can choose its own rate-limit key. With several proxies `PASSKEY_XFF_DEPTH` is their number; a proxy that sets another header (e.g. `X-Real-IP`) is used through `PASSKEY_CLIENT_IP_HEADER`. Origin checks do not depend on the proxy: they compare against `PASSKEY_ORIGIN`.
 - **BR-OPS-5** Any number of instances may run at once: all state is in Postgres. Per instance there is only the connection pool and the time of the last cleanup.
-- **BR-OPS-6** The service worker (`public/service-worker.js`) only caches page navigations, `/_next/static/*` and `/favicon/*`; it skips `/api/*` entirely, so API responses are never served from a cache. This MUST stay true.
+- **BR-OPS-6** The service worker (`public/service-worker.js`) only caches page navigations, `/_next/static/*` and `/favicon/*`; it skips `/api/*` entirely, so API responses are never served from a cache. This MUST stay true. Writing a copy into its caches is best effort: a failed write (full or restricted storage) never fails the response, and redirected responses are not kept (Safari refuses to show them).
 - **BR-OPS-7** `GET /api/health` answers `200 { "ok": true }` after a trivial database query, or `503 { "ok": false }`. Neon suspends an idle database and bills the time it runs, so a monitor calling this every minute keeps it awake.
 
 ---
@@ -360,7 +360,7 @@ What the merged frontend relies on; each item is also a requirement above.
 - **BR-TEST-1** Unit tests (Vitest, on PGlite) cover: configuration, including the Vercel origin and the database URL; migrations, including migration 2 on accounts from before usernames; username validation and case-insensitive uniqueness; credential storage round-trips and transaction rollback; challenge issue, redeem, expiry, single use, flow binding and the per-flow cap; session hashing, sliding expiry and expiry cleanup; rate limits, also under concurrency; error-to-status mapping; counter logic.
 - **BR-TEST-2** End-to-end tests (Playwright with a Chrome DevTools Protocol virtual authenticator, FR-TEST-3) run against `pnpm build && pnpm start` on a throwaway Postgres database named by `E2E_DATABASE_URL`, and cover every flow in FR-TEST-4:
   - "Sign up" → register on `/register` → home, reload (still signed in), sign out, "Sign in" on the home page; `/login` redirects home;
-  - nothing is shown until `GET /session` answers;
+  - nothing is shown until `GET /session` answers; "Loading…" when it is slow; buttons and a message when it fails or never answers (15 s); buttons even when the browser's capability checks never settle;
   - `/register` has one field, the username, and "Sign up"; signed in, "Sign out" is the only action, and `/register` sends you home;
   - the same account never gets a second passkey on a device; a taken username (in any case) is refused before any prompt; a blank one too;
   - sign in when the authenticator has no passkey → neutral message;

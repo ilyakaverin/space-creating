@@ -77,6 +77,59 @@ test("nothing is shown until the session is known", async ({ app }) => {
 	expect(await app.actions()).toEqual(["Sign out"]);
 });
 
+test("a slow start says Loading…, and a lost session request still shows the buttons", async ({
+	app,
+}) => {
+	// Held for 3 s, like a cold server waking a sleeping database. The hint
+	// appears after 1 s, so it is on screen for the last 2.
+	await app.page.route("**/api/passkey/session", async (route) => {
+		await new Promise((resolve) => setTimeout(resolve, 3_000));
+		await route.continue();
+	});
+	await app.page.goto("/");
+	await expect(app.page.locator("section.passkey")).toContainText("Loading…");
+	await app.settle();
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
+	expect(await app.message()).toBe("");
+
+	await app.page.unroute("**/api/passkey/session");
+	await app.page.route("**/api/passkey/session", (route) => route.abort());
+	await app.goto();
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
+	expect(await app.message()).toBe(
+		"Couldn't reach the server. Check your connection.",
+	);
+});
+
+test("a session request that never answers is given up after 15 s", async ({
+	app,
+}) => {
+	test.setTimeout(40_000);
+	await app.page.route("**/api/passkey/session", () => {
+		// Never answered.
+	});
+	await app.page.goto("/");
+	await app.settle();
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
+	expect(await app.message()).toBe(
+		"Couldn't reach the server. Check your connection.",
+	);
+});
+
+test("a browser whose passkey checks never answer still gets the buttons", async ({
+	app,
+}) => {
+	// Some in-app browsers return promises from these that never settle.
+	await app.page.addInitScript(() => {
+		const never = () => new Promise<boolean>(() => {});
+		const statics = PublicKeyCredential as unknown as Record<string, unknown>;
+		statics.isUserVerifyingPlatformAuthenticatorAvailable = never;
+		statics.getClientCapabilities = never;
+	});
+	await app.goto();
+	expect(await app.actions()).toEqual(["Sign in", "Sign up"]);
+});
+
 test("/register asks for a username; signed in, only sign-out is offered", async ({
 	app,
 }) => {
